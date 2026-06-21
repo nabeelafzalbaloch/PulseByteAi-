@@ -1,92 +1,74 @@
 """
-generate_script.py  (UPGRADED — YouTube Strategist format)
-----------------------------------------------------------
-Ahmad bhai ke strategist spec ke mutabiq: strong hook, bullet-style engaging
-facts, SEO title (<=60 chars), 200-word description, 5 keywords, 3 hashtags,
-fast-paced multi-platform tone, aur end pe CTA.
+generate_script.py  (PulseByteAi — web-researched + AI Uncovered style)
+----------------------------------------------------------------------
+Flow:
+  1. web_research.research_topic(topic)  -> asli web facts (Tavily)
+  2. Claude un facts + PulseByteAi ki winning style pe retention-first script likhta hai
 
-Output (pipeline-compatible + naye fields):
-    {
-      "title": str,            # SEO, <=60 chars
-      "hook": str,             # 0-3s scroll-stopper
-      "hook_type": str,
-      "hook_options": [...],
-      "script": str,           # full voiceover: hook + bullet facts + CTA
-      "scenes": [{"text","visual","keywords"}],
-      "description": str,      # ~200 word summary
-      "keywords": [str x5],    # high-ranking
-      "hashtags": [str x3],
-      "video_flow_notes": str  # pacing/transition guidance
-    }
+Style "AI Uncovered": AI ka chhupa/khatarnaak sach; dark, urgent; pehle 3 second me
+tension (swipe-away kam karne ke liye).
+
+Output (pipeline-compatible):
+  title(<=60), hook, hook_type, hook_options, script, scenes, description,
+  keywords(5), hashtags(3), video_flow_notes
+
+Env: ANTHROPIC_API_KEY  (zaroori) ; TAVILY_API_KEY (optional, web facts ke liye)
 """
 
 import os
 import json
 import time
 import anthropic
+from web_research import research_topic
 
 MODEL = "claude-sonnet-4-6"
 
-HOOK_FRAMEWORKS = """HOOK FRAMEWORKS (pick the strongest per topic):
-1. Curiosity gap   2. Contrarian/negative ("Stop doing X")   3. Bold promise
-4. Pointed question   5. Mistake/warning   6. Specific number
-7. Relatable callout   8. Surprising fact
-RULES: first 3 words decide the scroll; prefer a PATTERN INTERRUPT (visual + vocal
-shock); no generic openers; hook must match the payoff."""
+HOOK_FRAMEWORKS = """HOOK FRAMEWORKS: 1.Curiosity gap 2.Contrarian("Stop...") 3.Bold promise
+4.Pointed question 5.Mistake/warning 6.Specific number 7.Relatable callout 8.Surprising fact.
+First 3 WORDS decide the scroll; prefer a PATTERN INTERRUPT (visual+vocal shock); no generic openers."""
 
-SYSTEM_PROMPT = """You are an expert content strategist for PulseByte, a YouTube channel
-focused on AI-driven historical and technological storytelling. Your goal is highly
-accurate, engaging, culturally authentic short-form scripts.
+SYSTEM_PROMPT = """You are the head scriptwriter for PulseByteAi, a fast-growing English
+short-form channel (UK/USA audience) that EXPOSES the hidden, unsettling truths about AI.
 
-=== CRITICAL GEOGRAPHICAL ACCURACY (non-negotiable) ===
-- When you mention a city in Pakistan, use ONLY landmarks, culture, and history that
-  are specific to THAT city.
-- NEVER default to generic national landmarks (Badshahi Mosque, Minar-e-Pakistan,
-  Faisal Mosque) unless the subject city is literally that place (Lahore / Islamabad).
-- If a video is about a specific city (e.g. Kasur, Multan, Faisalabad), research and
-  mention only that location's own landmarks, figures, and stories.
-- If you are NOT sure a monument/figure truly belongs to that city, SKIP it. It is
-  always better to omit a landmark than to state incorrect geography.
-- Verify location accuracy internally BEFORE drafting. On any conflict, drop the
-  popular-but-wrong landmark and keep only authentic local details.
+=== CHANNEL VOICE: "AI UNCOVERED" ===
+Tone: dark, urgent, "they don't want you to know this." Every video reveals a secret,
+a threat, or something that feels forbidden about AI/technology. This is what already
+works on the channel (top videos: a "ghost" in your phone, AI taking jobs, fake AI voices).
 
-=== STYLE & TONE ===
-- Strong, curiosity-driven hook.
-- Punchy, rhythmic language, ideal for ElevenLabs AI narration (easy to speak aloud).
-- Avoid clichés and repetitive phrasing.
-- Always tie the history to the "soul" / identity of the place.
+=== RETENTION RULES (the channel's #1 problem is people swiping away) ===
+- The first 3 WORDS must create tension or name a threat. No slow intros, no "In this video".
+- TEASE, don't explain. Make them stay to "find out."
+- Every 5-7 seconds add a new turn/hook ("But here's the scary part...").
+- End each fact UNFINISHED so the viewer can't swipe.
+- Punchy, rhythmic, easy for an AI voice (ElevenLabs) to speak. Avoid cliches.
 
-You write fast-paced scripts for YouTube Shorts, TikTok, Instagram Reels and Facebook
-Reels. Success is measured by retention and shares.
+=== USE THE FACTS ===
+If VERIFIED WEB FACTS are provided, build the script on them (accurate, specific, current).
+Prefer them over assumptions. If a fact is unclear, leave it out rather than invent.
+
+=== GEOGRAPHICAL ACCURACY (if a place is mentioned) ===
+Use only landmarks/history specific to that exact place. Never default to generic national
+landmarks. If unsure, skip it.
 
 """ + HOOK_FRAMEWORKS + """
 
-WRITE THE SCRIPT THIS WAY:
-- HOOK (0-3s): one strong, visually appealing, curiosity-sparking line.
-- BODY: 3-5 short segments, each a punchy bullet-style engaging FACT. Keep technical
-  terms simple. Each segment ends on a micro-cliffhanger to pull the viewer forward.
-- CTA (end): invite viewers to subscribe and to comment their opinion.
+WRITE THE SCRIPT:
+- HOOK (0-3s): pattern-interrupt naming the secret/threat.
+- BODY: 3-5 punchy segments, each a bullet-style fact ending on a micro-cliffhanger.
+- CTA (end): "Follow PulseByte..." + tease the next episode. Invite a comment.
 
-ALSO PRODUCE:
-- TITLE: clickable + SEO-friendly, MAX 60 characters.
-- DESCRIPTION: ~200 words summarizing the video for YouTube.
-- KEYWORDS: 5 high-ranking search keywords.
-- HASHTAGS: exactly 3 relevant hashtags.
-- VIDEO_FLOW_NOTES: short notes on pacing, suggested visuals, and where transitions/
-  zoom effects should hit.
+ALSO PRODUCE: TITLE (clickable, <=60 chars), DESCRIPTION (~200 words),
+KEYWORDS (5), HASHTAGS (exactly 3), VIDEO_FLOW_NOTES (pacing + where transitions hit).
 
-Respond with ONLY a valid JSON object, no markdown:
+Respond with ONLY valid JSON, no markdown:
 {
-  "title": "... (<=60 chars)",
-  "hook_options": [{"hook":"...","framework":"...","score":9,"why":"..."}],
-  "hook": "best hook",
-  "hook_type": "framework of chosen hook",
-  "script": "full spoken voiceover: hook, then bullet-style facts, then CTA",
-  "scenes": [{"text":"spoken line (ends on micro-cliffhanger)","visual":"what to show","keywords":["stock","terms"]}],
-  "description": "~200 word YouTube description",
-  "keywords": ["k1","k2","k3","k4","k5"],
-  "hashtags": ["#a","#b","#c"],
-  "video_flow_notes": "pacing + transition/effect guidance"
+  "title":"(<=60 chars)",
+  "hook_options":[{"hook":"...","framework":"...","score":9,"why":"..."}],
+  "hook":"best hook","hook_type":"framework",
+  "script":"hook + bullet facts + CTA",
+  "scenes":[{"text":"line (micro-cliffhanger)","visual":"what to show","keywords":["stock","terms"]}],
+  "description":"~200 words","keywords":["k1","k2","k3","k4","k5"],
+  "hashtags":["#a","#b","#c"],"video_flow_notes":"..."
 }"""
 
 
@@ -99,24 +81,26 @@ def _extract_json(text):
     return json.loads(text.strip())
 
 
-def _build_prompt(topic, video_type, duration, language, brand_voice):
-    parts = [
+def generate_script(topic, video_type="faceless", duration=30, language="English",
+                    brand_voice=None, api_key=None, max_retries=3, use_research=True):
+    brand_voice = brand_voice if brand_voice is not None else os.environ.get("BRAND_VOICE", "")
+    client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+
+    facts = research_topic(topic) if use_research else ""
+
+    user = [
         f"Topic: {topic}",
-        f"Video type: {video_type}",
-        f"Target duration: {duration} seconds (~2.2 words/second)",
+        f"Duration: {duration} seconds (~2.2 words/sec)",
         f"Language: {language}",
     ]
     if brand_voice:
-        parts.append(f"Brand voice: {brand_voice}")
-    parts.append("Generate the full strategist JSON now.")
-    return "\n".join(parts)
-
-
-def generate_script(topic, video_type="faceless", duration=30, language="English",
-                    brand_voice=None, api_key=None, max_retries=3):
-    brand_voice = brand_voice if brand_voice is not None else os.environ.get("BRAND_VOICE", "")
-    client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
-    prompt = _build_prompt(topic, video_type, duration, language, brand_voice)
+        user.append(f"Brand voice: {brand_voice}")
+    if facts:
+        user.append(f"\nVERIFIED WEB FACTS (use these):\n{facts}")
+    else:
+        user.append("\n(No web facts available — use your own knowledge, stay accurate.)")
+    user.append("\nGenerate the full PulseByteAi JSON now.")
+    prompt = "\n".join(user)
 
     last_error = None
     for attempt in range(1, max_retries + 1):
@@ -134,22 +118,21 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
             if not data.get("hook_type") and best:
                 data["hook_type"] = best.get("framework", "")
 
-            for field in ("title", "hook", "script", "hashtags"):
-                if not data.get(field):
-                    raise ValueError(f"Missing/empty field: {field}")
+            for f in ("title", "hook", "script", "hashtags"):
+                if not data.get(f):
+                    raise ValueError(f"Missing field: {f}")
 
-            # Title <=60 chars enforce
             if len(data["title"]) > 60:
                 data["title"] = data["title"][:57].rstrip() + "..."
-
             data.setdefault("hook_options", [])
             data.setdefault("hook_type", "")
             data.setdefault("scenes", [])
             data.setdefault("description", "")
             data.setdefault("keywords", [])
             data.setdefault("video_flow_notes", "")
-            data["hashtags"] = data["hashtags"][:3]   # spec: 3 hashtags
-            data["keywords"] = data["keywords"][:5]    # spec: 5 keywords
+            data["hashtags"] = data["hashtags"][:3]
+            data["keywords"] = data["keywords"][:5]
+            data["researched"] = bool(facts)
             return data
 
         except (json.JSONDecodeError, ValueError) as e:
@@ -163,11 +146,8 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
 
 
 if __name__ == "__main__":
-    r = generate_script("hidden history of Kasur, Pakistan", duration=40)
-    print("TITLE:", r["title"], f"({len(r['title'])} chars)")
+    r = generate_script("AI that can clone your voice in 3 seconds", duration=40)
+    print("RESEARCHED:", r.get("researched"))
+    print("TITLE:", r["title"])
     print("HOOK:", r["hook"])
-    print("DESC:", r["description"][:120], "...")
-    print("KEYWORDS:", r["keywords"])
-    print("HASHTAGS:", r["hashtags"])
-    print("FLOW:", r["video_flow_notes"][:120])
-                          
+    
