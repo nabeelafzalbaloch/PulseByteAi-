@@ -135,12 +135,13 @@ def _download(url, path):
 
 
 def _normalize_clip(src, dst, clip_seconds):
-    """Clip ko 1080x1920 me crop/scale + fixed length pe trim, audio hata do."""
+    """Clip ko 1080x1920, exact clip_seconds (loop if short), 30fps, uniform format."""
     _run([
-        "ffmpeg", "-y", "-i", src,
+        "ffmpeg", "-y", "-stream_loop", "-1", "-i", src,
         "-t", f"{clip_seconds:.2f}",
-        "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1",
-        "-an", "-r", "30",
+        "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+               f"fps=30,format=yuv420p,setsar=1",
+        "-an",
         "-c:v", "libx264", "-preset", PRESET, "-pix_fmt", "yuv420p", dst,
     ])
 
@@ -194,10 +195,19 @@ def render_faceless_segment(
     if not urls:
         raise RuntimeError("Pexels/Pixabay se koi clip nahi mili.")
 
-    # 2) har clip ko barabar time do, normalize karo
-    per_clip = max(2.0, audio_dur / len(urls))
+    # 2) clip count CAP karo (Railway memory ke liye), uniform per_clip nikaalo
+    MAX_CLIPS = int(os.environ.get("MAX_CLIPS", "5"))
+    n = max(2, min(MAX_CLIPS, round(audio_dur / 6) or 2))
+    if not EFFECTS:
+        n = max(1, min(MAX_CLIPS, round(audio_dur / 6) or 1))
+    # total = n*per_clip - (n-1)*T  ==  audio_dur  -> per_clip nikaalo
+    t_loss = (n - 1) * TRANSITION if EFFECTS else 0
+    per_clip = max(TRANSITION + 1.5, (audio_dur + t_loss) / n)
+
+    # 3) sirf n clips download + normalize (loop se exact per_clip)
     norm_clips = []
-    for i, url in enumerate(urls):
+    for i in range(n):
+        url = urls[i % len(urls)]
         raw = os.path.join(workdir, f"raw_{i}.mp4")
         norm = os.path.join(workdir, f"norm_{i}.mp4")
         try:
@@ -208,70 +218,75 @@ def render_faceless_segment(
             print(f"  clip {i} skip: {e}")
     if not norm_clips:
         raise RuntimeError("Koi clip normalize nahi hui.")
+    seq = norm_clips
 
-    # 3) clip sequence (audio cover karne ke liye loop; crossfade ka time bhi count)
-    step = per_clip - TRANSITION if EFFECTS else per_clip
-    n_needed = max(1, int((audio_dur + per_clip) / max(0.5, step)) + 1)
-    seq = [norm_clips[k % len(norm_clips)] for k in range(n_needed)]
-
-    # 4) captions filter (dono modes me lagta hai)
+    # 4) captions
     srt = None
     if add_captions:
         srt = os.path.join(workdir, "captions.srt")
         _make_captions_srt(audio_path, srt)
     style = ("FontName=Arial,FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,"
              "OutlineColour=&H00000000,Outline=3,Alignment=2,MarginV=240")
-
     fade_out_st = max(0.0, audio_dur - 0.5)
 
     if EFFECTS and len(seq) > 1:
-        # ---- EFFECTS: crossfade transitions + fade in/out ----
-        cmd = ["ffmpeg", "-y"]
+        # ---- EFFECTS: crossfade + fade in/out (format-forced, thread-limited) ----
+        cmd = ["ffmpeg", "-y", "-threads", "2"]
         for c in seq:
             cmd += ["-i", c]
-        cmd += ["-i", audio_path]   # last input = audio
+        cmd += ["-i", audio_path]               # last input = audio
+        audio_idx = len(seq)
 
+        # har input ko uniform format/fps/sar/timebase do (auto_scale error fix)
+        parts = []
+        for k in range(len(seq)):
+            parts.append(f"[{k}:v]format=yuv420p,fps=30,setsar=1,settb=AVTB[v{k}]")
         # xfade chain: offset_k = k*(per_clip - TRANSITION)
-        parts, label = [], "0"
+        label = "v0"
         for k in range(1, len(seq)):
             off = k * (per_clip - TRANSITION)
             if k < len(seq) - 1:
                 out = f"x{k}"
-                parts.append(f"[{label}][{k}]xfade=transition=fade:"
+                parts.append(f"[{label}][v{k}]xfade=transition=fade:"
                              f"duration={TRANSITION}:offset={off:.2f}[{out}]")
                 label = out
             else:
-                tail = (f"[{label}][{k}]xfade=transition=fade:duration={TRANSITION}:"
+                tail = (f"[{label}][v{k}]xfade=transition=fade:duration={TRANSITION}:"
                         f"offset={off:.2f},fade=t=in:st=0:d=0.4,"
                         f"fade=t=out:st={fade_out_st:.2f}:d=0.5")
                 if srt:
                     tail += f",subtitles={srt}:force_style='{style}'"
                 tail += "[v]"
                 parts.append(tail)
-        filter_complex = ";".join(parts)
-        audio_idx = len(seq)
-        cmd += ["-filter_complex", filter_complex,
+        cmd += ["-filter_complex", ";".join(parts),
                 "-map", "[v]", "-map", f"{audio_idx}:a:0",
                 "-c:v", "libx264", "-preset", PRESET, "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-shortest", output_path]
         _run(cmd)
         return output_path
 
-    # ---- fallback: hard-cut concat (EFFECTS off ya 1 hi clip) ----
+    # ---- fallback: concat + fade in/out (EFFECTS off ya 1 clip) ----
+    # clips ko audio cover karne ke liye loop (concat low-memory hai)
+    full_seq, total = [], 0.0
+    j = 0
+    while total < audio_dur + per_clip:
+        full_seq.append(seq[j % len(seq)])
+        total += per_clip
+        j += 1
     concat_file = os.path.join(workdir, "concat.txt")
     with open(concat_file, "w") as f:
-        for c in seq:
+        for c in full_seq:
             f.write(f"file '{os.path.abspath(c)}'\n")
     silent = os.path.join(workdir, "silent.mp4")
     _run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_file,
           "-c", "copy", silent])
 
-    sub_filter = []
+    vf = f"fade=t=in:st=0:d=0.4,fade=t=out:st={fade_out_st:.2f}:d=0.5"
     if srt:
-        sub_filter = ["-vf", f"subtitles={srt}:force_style='{style}'"]
+        vf += f",subtitles={srt}:force_style='{style}'"
     _run([
-        "ffmpeg", "-y", "-i", silent, "-i", audio_path,
-        *sub_filter,
+        "ffmpeg", "-y", "-threads", "2", "-i", silent, "-i", audio_path,
+        "-vf", vf,
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "libx264", "-preset", PRESET, "-pix_fmt", "yuv420p", "-c:a", "aac",
         "-shortest", output_path,
@@ -287,4 +302,3 @@ if __name__ == "__main__":
     # make_voiceover(seg["text"], "seg_audio.mp3")
     render_faceless_segment(seg, "seg_audio.mp3", "faceless_segment.mp4")
     print("Done -> faceless_segment.mp4")
-          
