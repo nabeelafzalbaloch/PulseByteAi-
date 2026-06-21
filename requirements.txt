@@ -3,3 +3,4 @@ anthropic
 elevenlabs
 mutagen
 faster-whisper
+schedule
