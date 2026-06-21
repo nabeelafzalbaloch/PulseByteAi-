@@ -186,3 +186,4 @@ if __name__ == "__main__":
     for h in result["hook_options"]:
         print(f"  [{h.get('score')}] ({h.get('framework')}) {h.get('hook')}")
     print("\nSCRIPT:\n", result["script"])
+          
