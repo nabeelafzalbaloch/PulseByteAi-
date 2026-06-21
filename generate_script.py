@@ -1,32 +1,23 @@
 """
-generate_script.py  (UPGRADED — hook-optimized)
------------------------------------------------
-Pipeline ka Stage 1: Claude API se viral-style script + metadata.
+generate_script.py  (UPGRADED — YouTube Strategist format)
+----------------------------------------------------------
+Ahmad bhai ke strategist spec ke mutabiq: strong hook, bullet-style engaging
+facts, SEO title (<=60 chars), 200-word description, 5 keywords, 3 hashtags,
+fast-paced multi-platform tone, aur end pe CTA.
 
-Naya kya hai:
-  1. 8 proven HOOK FRAMEWORKS prompt me built-in (curiosity gap, contrarian,
-     bold promise, etc.) -> generic ke bajaye scroll-stopping hooks.
-  2. Claude pehle 5 HOOK OPTIONS banata hai, khud score/rank karta hai, aur
-     sabse strong ko final hook bana kar uspe script likhta hai.
-  3. BRAND VOICE + EXAMPLES slot -> aap ki niche ke jo hooks/videos chale hain
-     unhe few-shot ke taur pe do, output aap ke style me dhal jaata hai.
-
-Output (pipeline ke baaki stages ke saath compatible):
+Output (pipeline-compatible + naye fields):
     {
-      "title": str,
-      "hook": str,                 # chosen best hook
-      "hook_options": [ {"hook","framework","score","why"} , ... ],
-      "script": str,
-      "scenes": [ {"text","visual","keywords"} , ... ],
-      "caption": str,
-      "hashtags": [str, ...]
+      "title": str,            # SEO, <=60 chars
+      "hook": str,             # 0-3s scroll-stopper
+      "hook_type": str,
+      "hook_options": [...],
+      "script": str,           # full voiceover: hook + bullet facts + CTA
+      "scenes": [{"text","visual","keywords"}],
+      "description": str,      # ~200 word summary
+      "keywords": [str x5],    # high-ranking
+      "hashtags": [str x3],
+      "video_flow_notes": str  # pacing/transition guidance
     }
-
-Requirements:
-    pip install anthropic
-    export ANTHROPIC_API_KEY="sk-ant-..."
-    # optional:
-    export BRAND_VOICE="punchy, direct, no fluff, Gen-Z tone"
 """
 
 import os
@@ -36,57 +27,66 @@ import anthropic
 
 MODEL = "claude-sonnet-4-6"
 
-# ---- Proven hook frameworks (yahi content quality ka asli engine hai) ----
-HOOK_FRAMEWORKS = """HOOK FRAMEWORKS (use a different one per option, pick what fits best):
-1. Curiosity gap     - tease the payoff without revealing it ("The reason you can't focus isn't what you think").
-2. Contrarian/negative - challenge a common belief ("Stop drinking water first thing — do this instead").
-3. Bold promise      - a clear, specific transformation ("Do this for 7 days and your mornings change").
-4. Pointed question  - a question the viewer NEEDS answered ("Why do focused people never check their phone first?").
-5. Mistake/warning   - call out a costly error ("You're ruining your mornings with this one habit").
-6. Specific number   - concrete listicle ("3 ten-second habits that fixed my focus").
-7. Relatable callout - name the exact viewer ("If you wake up tired no matter what — watch this").
-8. Surprising fact   - a counterintuitive stat or truth ("90% of people use their most focused hour scrolling").
+HOOK_FRAMEWORKS = """HOOK FRAMEWORKS (pick the strongest per topic):
+1. Curiosity gap   2. Contrarian/negative ("Stop doing X")   3. Bold promise
+4. Pointed question   5. Mistake/warning   6. Specific number
+7. Relatable callout   8. Surprising fact
+RULES: first 3 words decide the scroll; prefer a PATTERN INTERRUPT (visual + vocal
+shock); no generic openers; hook must match the payoff."""
 
-RULES:
-- The FIRST 3 WORDS decide the scroll. Front-load tension or specificity.
-- Prefer a PATTERN INTERRUPT opening (e.g. "Stop doing [X]...") with visual + vocal
-  shock — something that breaks the viewer's autopilot.
-- No generic openers ("In today's video", "Here are some tips").
-- Hook must match the script's actual payoff (no clickbait that under-delivers).
-- BODY RETENTION: each scene must end on a MICRO-CLIFFHANGER — a small open loop that
-  makes the viewer need the next line ("...but the third one is what actually works")."""
+SYSTEM_PROMPT = """You are an expert content strategist for PulseByte, a YouTube channel
+focused on AI-driven historical and technological storytelling. Your goal is highly
+accurate, engaging, culturally authentic short-form scripts.
 
+=== CRITICAL GEOGRAPHICAL ACCURACY (non-negotiable) ===
+- When you mention a city in Pakistan, use ONLY landmarks, culture, and history that
+  are specific to THAT city.
+- NEVER default to generic national landmarks (Badshahi Mosque, Minar-e-Pakistan,
+  Faisal Mosque) unless the subject city is literally that place (Lahore / Islamabad).
+- If a video is about a specific city (e.g. Kasur, Multan, Faisalabad), research and
+  mention only that location's own landmarks, figures, and stories.
+- If you are NOT sure a monument/figure truly belongs to that city, SKIP it. It is
+  always better to omit a landmark than to state incorrect geography.
+- Verify location accuracy internally BEFORE drafting. On any conflict, drop the
+  popular-but-wrong landmark and keep only authentic local details.
 
-SYSTEM_PROMPT = """You are an elite short-form video scriptwriter for YouTube Shorts,
-Instagram Reels, TikTok and Facebook. You are known for hooks that stop the scroll
-and scripts that hold retention to the last second.
+=== STYLE & TONE ===
+- Strong, curiosity-driven hook.
+- Punchy, rhythmic language, ideal for ElevenLabs AI narration (easy to speak aloud).
+- Avoid clichés and repetitive phrasing.
+- Always tie the history to the "soul" / identity of the place.
+
+You write fast-paced scripts for YouTube Shorts, TikTok, Instagram Reels and Facebook
+Reels. Success is measured by retention and shares.
 
 """ + HOOK_FRAMEWORKS + """
 
-PROCESS (do this internally, then output JSON):
-- Write 5 distinct hook options, each using a DIFFERENT framework above.
-- Score each 1-10 on scroll-stopping power and give a one-line reason.
-- Pick the highest-scoring hook as the final hook.
-- Write the full voiceover script that delivers on that hook, scene by scene, with
-  each scene ending on a micro-cliffhanger.
+WRITE THE SCRIPT THIS WAY:
+- HOOK (0-3s): one strong, visually appealing, curiosity-sparking line.
+- BODY: 3-5 short segments, each a punchy bullet-style engaging FACT. Keep technical
+  terms simple. Each segment ends on a micro-cliffhanger to pull the viewer forward.
+- CTA (end): invite viewers to subscribe and to comment their opinion.
 
-Respond with ONLY a valid JSON object, no markdown, no preamble:
+ALSO PRODUCE:
+- TITLE: clickable + SEO-friendly, MAX 60 characters.
+- DESCRIPTION: ~200 words summarizing the video for YouTube.
+- KEYWORDS: 5 high-ranking search keywords.
+- HASHTAGS: exactly 3 relevant hashtags.
+- VIDEO_FLOW_NOTES: short notes on pacing, suggested visuals, and where transitions/
+  zoom effects should hit.
+
+Respond with ONLY a valid JSON object, no markdown:
 {
-  "title": "...",
-  "hook_options": [
-    {"hook": "...", "framework": "curiosity gap", "score": 9, "why": "..."}
-    // exactly 5
-  ],
-  "hook": "the single highest-scoring hook (copy it here)",
-  "hook_type": "the framework name of the chosen hook",
-  "script": "full spoken voiceover, starting with the chosen hook",
-  "scenes": [
-    {"text": "line spoken in this scene (ends on a micro-cliffhanger)",
-     "visual": "what to show on screen",
-     "keywords": ["stock", "search", "terms"]}
-  ],
-  "caption": "post caption with a soft call to action",
-  "hashtags": ["#tag1", "#tag2"]
+  "title": "... (<=60 chars)",
+  "hook_options": [{"hook":"...","framework":"...","score":9,"why":"..."}],
+  "hook": "best hook",
+  "hook_type": "framework of chosen hook",
+  "script": "full spoken voiceover: hook, then bullet-style facts, then CTA",
+  "scenes": [{"text":"spoken line (ends on micro-cliffhanger)","visual":"what to show","keywords":["stock","terms"]}],
+  "description": "~200 word YouTube description",
+  "keywords": ["k1","k2","k3","k4","k5"],
+  "hashtags": ["#a","#b","#c"],
+  "video_flow_notes": "pacing + transition/effect guidance"
 }"""
 
 
@@ -99,65 +99,57 @@ def _extract_json(text):
     return json.loads(text.strip())
 
 
-def _build_prompt(topic, video_type, duration, language, brand_voice, examples):
+def _build_prompt(topic, video_type, duration, language, brand_voice):
     parts = [
         f"Topic: {topic}",
         f"Video type: {video_type}",
-        f"Target duration: {duration} seconds (about 2.2 words/second of speech)",
+        f"Target duration: {duration} seconds (~2.2 words/second)",
         f"Language: {language}",
     ]
     if brand_voice:
-        parts.append(f"\nBrand voice (write in this tone): {brand_voice}")
-    if examples:
-        ex = "\n".join(f"- {e}" for e in examples)
-        parts.append(
-            "\nThese hooks/videos performed well for this creator — match this "
-            f"energy and style (do NOT copy them):\n{ex}")
-    parts.append("\nGenerate the script JSON now.")
+        parts.append(f"Brand voice: {brand_voice}")
+    parts.append("Generate the full strategist JSON now.")
     return "\n".join(parts)
 
 
-def generate_script(
-    topic,
-    video_type="faceless",
-    duration=30,
-    language="English",
-    brand_voice=None,
-    examples=None,
-    api_key=None,
-    max_retries=3,
-):
-    """Hook-optimized script generate karta hai. Dict return karta hai."""
+def generate_script(topic, video_type="faceless", duration=30, language="English",
+                    brand_voice=None, api_key=None, max_retries=3):
     brand_voice = brand_voice if brand_voice is not None else os.environ.get("BRAND_VOICE", "")
     client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
-    prompt = _build_prompt(topic, video_type, duration, language, brand_voice, examples)
+    prompt = _build_prompt(topic, video_type, duration, language, brand_voice)
 
     last_error = None
     for attempt in range(1, max_retries + 1):
         try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=2000,
-                system=SYSTEM_PROMPT,
+            resp = client.messages.create(
+                model=MODEL, max_tokens=2500, system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
-            data = _extract_json(response.content[0].text)
+            data = _extract_json(resp.content[0].text)
 
-            # agar "hook" missing -> hook_options me se best pick karo
-            best = None
-            if data.get("hook_options"):
-                best = max(data["hook_options"], key=lambda h: h.get("score", 0))
+            best = max(data["hook_options"], key=lambda h: h.get("score", 0)) \
+                if data.get("hook_options") else None
             if not data.get("hook") and best:
                 data["hook"] = best["hook"]
             if not data.get("hook_type") and best:
                 data["hook_type"] = best.get("framework", "")
 
             for field in ("title", "hook", "script", "hashtags"):
-                if field not in data or not data[field]:
+                if not data.get(field):
                     raise ValueError(f"Missing/empty field: {field}")
+
+            # Title <=60 chars enforce
+            if len(data["title"]) > 60:
+                data["title"] = data["title"][:57].rstrip() + "..."
+
             data.setdefault("hook_options", [])
             data.setdefault("hook_type", "")
             data.setdefault("scenes", [])
+            data.setdefault("description", "")
+            data.setdefault("keywords", [])
+            data.setdefault("video_flow_notes", "")
+            data["hashtags"] = data["hashtags"][:3]   # spec: 3 hashtags
+            data["keywords"] = data["keywords"][:5]    # spec: 5 keywords
             return data
 
         except (json.JSONDecodeError, ValueError) as e:
@@ -167,23 +159,15 @@ def generate_script(
             last_error = e
             time.sleep(2 * attempt)
 
-    raise RuntimeError(f"Script generation failed after {max_retries} tries: {last_error}")
+    raise RuntimeError(f"Script generation failed: {last_error}")
 
 
 if __name__ == "__main__":
-    result = generate_script(
-        topic="3 morning habits that boost focus",
-        video_type="faceless",
-        duration=30,
-        brand_voice="punchy, direct, slightly bold, no fluff",
-        examples=[
-            "Nobody talks about how boring focus actually is.",
-            "I tried waking at 5am for 30 days — here's the truth.",
-        ],
-    )
-    print("CHOSEN HOOK:", result["hook"])
-    print("\nALL OPTIONS:")
-    for h in result["hook_options"]:
-        print(f"  [{h.get('score')}] ({h.get('framework')}) {h.get('hook')}")
-    print("\nSCRIPT:\n", result["script"])
-          
+    r = generate_script("hidden history of Kasur, Pakistan", duration=40)
+    print("TITLE:", r["title"], f"({len(r['title'])} chars)")
+    print("HOOK:", r["hook"])
+    print("DESC:", r["description"][:120], "...")
+    print("KEYWORDS:", r["keywords"])
+    print("HASHTAGS:", r["hashtags"])
+    print("FLOW:", r["video_flow_notes"][:120])
+                          
