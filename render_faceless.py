@@ -27,6 +27,10 @@ W, H = 1080, 1920
 WHISPER_SIZE = os.environ.get("WHISPER_MODEL", "tiny")
 # ffmpeg encode speed: veryfast = kam CPU (Railway $5 ke liye accha)
 PRESET = os.environ.get("FFMPEG_PRESET", "veryfast")
+# effects: "on" -> crossfade transitions + fade in/out ; "off" -> hard cuts
+EFFECTS = os.environ.get("EFFECTS", "on").lower() == "on"
+# crossfade transition ki length (seconds)
+TRANSITION = float(os.environ.get("TRANSITION", "0.6"))
 
 # Whisper model ek dafa load -> reuse (memory bachta hai)
 _WHISPER = None
@@ -167,32 +171,66 @@ def render_faceless_segment(
     if not norm_clips:
         raise RuntimeError("Koi clip normalize nahi hui.")
 
-    # 3) concat list (audio duration cover karne ke liye loop)
+    # 3) clip sequence (audio cover karne ke liye loop; crossfade ka time bhi count)
+    step = per_clip - TRANSITION if EFFECTS else per_clip
+    n_needed = max(1, int((audio_dur + per_clip) / max(0.5, step)) + 1)
+    seq = [norm_clips[k % len(norm_clips)] for k in range(n_needed)]
+
+    # 4) captions filter (dono modes me lagta hai)
+    srt = None
+    if add_captions:
+        srt = os.path.join(workdir, "captions.srt")
+        _make_captions_srt(audio_path, srt)
+    style = ("FontName=Arial,FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,"
+             "OutlineColour=&H00000000,Outline=3,Alignment=2,MarginV=240")
+
+    fade_out_st = max(0.0, audio_dur - 0.5)
+
+    if EFFECTS and len(seq) > 1:
+        # ---- EFFECTS: crossfade transitions + fade in/out ----
+        cmd = ["ffmpeg", "-y"]
+        for c in seq:
+            cmd += ["-i", c]
+        cmd += ["-i", audio_path]   # last input = audio
+
+        # xfade chain: offset_k = k*(per_clip - TRANSITION)
+        parts, label = [], "0"
+        for k in range(1, len(seq)):
+            off = k * (per_clip - TRANSITION)
+            if k < len(seq) - 1:
+                out = f"x{k}"
+                parts.append(f"[{label}][{k}]xfade=transition=fade:"
+                             f"duration={TRANSITION}:offset={off:.2f}[{out}]")
+                label = out
+            else:
+                tail = (f"[{label}][{k}]xfade=transition=fade:duration={TRANSITION}:"
+                        f"offset={off:.2f},fade=t=in:st=0:d=0.4,"
+                        f"fade=t=out:st={fade_out_st:.2f}:d=0.5")
+                if srt:
+                    tail += f",subtitles={srt}:force_style='{style}'"
+                tail += "[v]"
+                parts.append(tail)
+        filter_complex = ";".join(parts)
+        audio_idx = len(seq)
+        cmd += ["-filter_complex", filter_complex,
+                "-map", "[v]", "-map", f"{audio_idx}:a:0",
+                "-c:v", "libx264", "-preset", PRESET, "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-shortest", output_path]
+        _run(cmd)
+        return output_path
+
+    # ---- fallback: hard-cut concat (EFFECTS off ya 1 hi clip) ----
     concat_file = os.path.join(workdir, "concat.txt")
-    seq, total = [], 0.0
-    j = 0
-    while total < audio_dur + per_clip:
-        seq.append(norm_clips[j % len(norm_clips)])
-        total += per_clip
-        j += 1
     with open(concat_file, "w") as f:
         for c in seq:
             f.write(f"file '{os.path.abspath(c)}'\n")
-
     silent = os.path.join(workdir, "silent.mp4")
     _run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_file,
           "-c", "copy", silent])
 
-    # 4) captions
     sub_filter = []
-    if add_captions:
-        srt = os.path.join(workdir, "captions.srt")
-        _make_captions_srt(audio_path, srt)
-        style = ("FontName=Arial,FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,"
-                 "OutlineColour=&H00000000,Outline=3,Alignment=2,MarginV=240")
+    if srt:
         sub_filter = ["-vf", f"subtitles={srt}:force_style='{style}'"]
-
-    # 5) final: silent video + voiceover + (captions), audio length pe trim
     _run([
         "ffmpeg", "-y", "-i", silent, "-i", audio_path,
         *sub_filter,
@@ -211,3 +249,4 @@ if __name__ == "__main__":
     # make_voiceover(seg["text"], "seg_audio.mp3")
     render_faceless_segment(seg, "seg_audio.mp3", "faceless_segment.mp4")
     print("Done -> faceless_segment.mp4")
+  
