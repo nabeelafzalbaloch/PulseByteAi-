@@ -19,7 +19,7 @@ import requests
 from generate_script import generate_script
 from make_voice import make_voiceover
 from render_faceless import render_faceless_segment
-from render_heygen import make_avatar_test
+from render_heygen import make_avatar_test, list_avatars
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 BASE = f"https://api.telegram.org/bot{TOKEN}"
@@ -63,6 +63,14 @@ def handle(chat_id, text):
             "  video: <topic>   -> faceless video\n"
             "  avatar: <text>   -> HeyGen avatar test\n\n"
             "Misal:  avatar: Hello, this is a test")
+        return
+
+    # --- HeyGen avatars list ---
+    if low.strip() in ("avatars", "/avatars"):
+        try:
+            send_message(chat_id, list_avatars())
+        except Exception as e:
+            send_message(chat_id, f"❌ Avatars list error: {e}")
         return
 
     # --- HeyGen avatar test ---
@@ -156,3 +164,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
