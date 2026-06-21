@@ -21,6 +21,7 @@ import requests
 from faster_whisper import WhisperModel
 
 PEXELS_SEARCH = "https://api.pexels.com/videos/search"
+PIXABAY_SEARCH = "https://pixabay.com/api/videos/"
 W, H = 1080, 1920
 
 # whisper model: "tiny" fast+sasta (default), "base"/"small" zyada accurate
@@ -61,30 +62,67 @@ def _media_duration(path):
 
 
 def search_pexels(keywords, api_key=None, per_query=2):
-    """Keywords se portrait video clips ke download URLs nikaalta hai."""
+    """Pexels se portrait video clips ke download URLs nikaalta hai."""
     api_key = api_key or os.environ.get("PEXELS_API_KEY")
+    if not api_key:
+        return []
     headers = {"Authorization": api_key}
     urls = []
     for kw in (keywords or ["abstract background"]):
-        r = requests.get(
-            PEXELS_SEARCH,
-            headers=headers,
-            params={"query": kw, "orientation": "portrait", "per_page": per_query},
-            timeout=30,
-        )
-        r.raise_for_status()
-        for video in r.json().get("videos", []):
-            # sabse bara HD-ish portrait file uthao
-            files = sorted(
-                video.get("video_files", []),
-                key=lambda f: (f.get("height") or 0),
-                reverse=True,
+        try:
+            r = requests.get(
+                PEXELS_SEARCH, headers=headers,
+                params={"query": kw, "orientation": "portrait", "per_page": per_query},
+                timeout=30,
             )
-            for f in files:
-                if f.get("link"):
-                    urls.append(f["link"])
-                    break
+            r.raise_for_status()
+            for video in r.json().get("videos", []):
+                files = sorted(video.get("video_files", []),
+                               key=lambda f: (f.get("height") or 0), reverse=True)
+                for f in files:
+                    if f.get("link"):
+                        urls.append(f["link"])
+                        break
+        except Exception as e:
+            print(f"  pexels '{kw}' skip: {e}")
     return urls
+
+
+def search_pixabay(keywords, api_key=None, per_query=2):
+    """Pixabay se video clips ke URLs (CC0, free, no attribution)."""
+    api_key = api_key or os.environ.get("PIXABAY_API_KEY")
+    if not api_key:
+        return []
+    urls = []
+    for kw in (keywords or ["abstract background"]):
+        try:
+            r = requests.get(
+                PIXABAY_SEARCH,
+                params={"key": api_key, "q": kw, "per_page": max(3, per_query)},
+                timeout=30,
+            )
+            r.raise_for_status()
+            for hit in r.json().get("hits", [])[:per_query]:
+                v = hit.get("videos", {})
+                pick = v.get("large") or v.get("medium") or v.get("small")
+                if pick and pick.get("url"):
+                    urls.append(pick["url"])
+        except Exception as e:
+            print(f"  pixabay '{kw}' skip: {e}")
+    return urls
+
+
+def gather_clip_urls(keywords, pexels_key=None):
+    """Pexels + Pixabay dono se clips jama, dedup + shuffle (zyada variety)."""
+    import random
+    urls = search_pexels(keywords, pexels_key) + search_pixabay(keywords)
+    random.shuffle(urls)
+    seen, out = set(), []
+    for u in urls:
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
 
 
 def _download(url, path):
@@ -149,12 +187,12 @@ def render_faceless_segment(
     os.makedirs(workdir, exist_ok=True)
     audio_dur = _media_duration(audio_path)
 
-    # 1) Pexels clips
-    urls = search_pexels(segment.get("keywords"), pexels_api_key)
+    # 1) clips dono sources se (Pexels + Pixabay)
+    urls = gather_clip_urls(segment.get("keywords"), pexels_api_key)
     if not urls:
-        urls = search_pexels(["cinematic background"], pexels_api_key)
+        urls = gather_clip_urls(["cinematic background"], pexels_api_key)
     if not urls:
-        raise RuntimeError("Pexels se koi clip nahi mili.")
+        raise RuntimeError("Pexels/Pixabay se koi clip nahi mili.")
 
     # 2) har clip ko barabar time do, normalize karo
     per_clip = max(2.0, audio_dur / len(urls))
@@ -249,4 +287,4 @@ if __name__ == "__main__":
     # make_voiceover(seg["text"], "seg_audio.mp3")
     render_faceless_segment(seg, "seg_audio.mp3", "faceless_segment.mp4")
     print("Done -> faceless_segment.mp4")
-  
+          
