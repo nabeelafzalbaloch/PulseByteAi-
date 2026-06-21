@@ -94,4 +94,21 @@ def make_avatar_test(text, output_path="heygen_test.mp4", api_key=None):
 if __name__ == "__main__":
     out = make_avatar_test("Hello! This is a HeyGen avatar test for PulseByte.")
     print("Done ->", out)
-  
+
+
+def list_avatars(api_key=None, limit=25):
+    """Account ke valid avatars (avatar_id + naam) ki list -> text string."""
+    r = requests.get("https://api.heygen.com/v2/avatars",
+                     headers={"X-Api-Key": api_key or os.environ.get("HEYGEN_API_KEY"),
+                              "Accept": "application/json"},
+                     timeout=30)
+    data = r.json().get("data", {})
+    avatars = data.get("avatars", []) or []
+    if not avatars:
+        return "Koi avatar nahi mila (ya API ne khaali list di)."
+    lines = []
+    for a in avatars[:limit]:
+        aid = a.get("avatar_id", "?")
+        name = a.get("avatar_name", "")
+        lines.append(f"{aid}  ->  {name}")
+    return "VALID AVATARS:\n" + "\n".join(lines)
