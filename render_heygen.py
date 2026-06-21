@@ -96,12 +96,12 @@ if __name__ == "__main__":
     print("Done ->", out)
 
 
-def list_avatars(api_key=None, limit=25):
+def list_avatars(api_key=None, limit=15):
     """Account ke valid avatars (avatar_id + naam) ki list -> text string."""
     r = requests.get("https://api.heygen.com/v2/avatars",
                      headers={"X-Api-Key": api_key or os.environ.get("HEYGEN_API_KEY"),
                               "Accept": "application/json"},
-                     timeout=30)
+                     timeout=90)
     data = r.json().get("data", {})
     avatars = data.get("avatars", []) or []
     if not avatars:
@@ -112,3 +112,4 @@ def list_avatars(api_key=None, limit=25):
         name = a.get("avatar_name", "")
         lines.append(f"{aid}  ->  {name}")
     return "VALID AVATARS:\n" + "\n".join(lines)
+    
