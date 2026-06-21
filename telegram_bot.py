@@ -1,19 +1,16 @@
 """
-telegram_bot.py  (STEP 5 — faceless video)
-------------------------------------------
-Ab bot poori FACELESS video banata hai: script + voiceover + Pexels b-roll +
-auto-captions -> ek 9:16 mp4.
-
+telegram_bot.py  (Step 5 + HeyGen avatar test)
+----------------------------------------------
 Commands:
     script: <topic>   -> text script
     voice:  <topic>   -> script + voiceover mp3
-    video:  <topic>   -> poori faceless video (mp4)   <-- naya
+    video:  <topic>   -> poori faceless video
+    avatar: <text>    -> HeyGen avatar test (text ko avatar bulwaata hai)   <-- naya
     (koi aur)         -> alive
 
 Env vars (Railway Variables):
-    TELEGRAM_TOKEN, ANTHROPIC_API_KEY, ELEVENLABS_API_KEY  (pehle se)
-    PEXELS_API_KEY                                         (naya)
-    BRAND_VOICE, WHISPER_MODEL, FFMPEG_PRESET              (optional)
+    TELEGRAM_TOKEN, ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, PEXELS_API_KEY
+    HEYGEN_API_KEY    (naya -- avatar test ke liye)
 """
 
 import os
@@ -22,6 +19,7 @@ import requests
 from generate_script import generate_script
 from make_voice import make_voiceover
 from render_faceless import render_faceless_segment
+from render_heygen import make_avatar_test
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 BASE = f"https://api.telegram.org/bot{TOKEN}"
@@ -46,7 +44,6 @@ def send_video(chat_id, path, caption=""):
 
 
 def _keywords_from(data):
-    """Scenes se saare keywords jama karo (dedup)."""
     kws = []
     for sc in data.get("scenes", []):
         for k in sc.get("keywords", []):
@@ -60,20 +57,41 @@ def handle(chat_id, text):
 
     if low in ("/start", "help", "/help"):
         send_message(chat_id,
-            "PulseByte (Step 5)\n\n"
+            "PulseByte\n\n"
             "  script: <topic>  -> text script\n"
             "  voice: <topic>   -> script + voiceover\n"
-            "  video: <topic>   -> poori faceless video\n\n"
-            "Misal:  video: 3 morning habits")
+            "  video: <topic>   -> faceless video\n"
+            "  avatar: <text>   -> HeyGen avatar test\n\n"
+            "Misal:  avatar: Hello, this is a test")
         return
 
+    # --- HeyGen avatar test ---
+    if low.startswith("avatar:"):
+        say = text.split(":", 1)[1].strip()
+        if not say:
+            send_message(chat_id, "Text khaali hai. Misal: avatar: Hello world")
+            return
+        send_message(chat_id, "⏳ HeyGen avatar bana raha hoon... (1-2 min)")
+        try:
+            out = f"heygen_{chat_id}_{int(time.time())}.mp4"
+            make_avatar_test(say, out)
+            send_video(chat_id, out, caption="HeyGen avatar test ✅")
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+        except Exception as e:
+            send_message(chat_id, f"❌ HeyGen error: {e}")
+        return
+
+    # --- script / voice / video ---
     cmd = None
     for c in ("video:", "voice:", "script:"):
         if low.startswith(c):
             cmd = c[:-1]
             break
     if not cmd:
-        send_message(chat_id, "✅ PulseByte alive! 'video: <topic>' try karein.")
+        send_message(chat_id, "✅ PulseByte alive! 'avatar: <text>' ya 'video: <topic>' try karein.")
         return
 
     topic = text.split(":", 1)[1].strip()
@@ -87,35 +105,28 @@ def handle(chat_id, text):
         send_message(chat_id,
             f"🎯 HOOK ({data.get('hook_type','?')}):\n{data['hook']}\n\n"
             f"📝 {data['script']}")
-
         if cmd == "script":
             return
 
         send_message(chat_id, "🎙️ Awaaz bana raha hoon...")
         audio = f"audio_{chat_id}_{int(time.time())}.mp3"
         make_voiceover(data["script"], audio)
-
         if cmd == "voice":
             send_audio(chat_id, audio)
             os.remove(audio)
             return
 
-        # cmd == "video"
-        send_message(chat_id, "🎬 Video render ho rahi hai... (2-3 min lag sakte hain)")
+        send_message(chat_id, "🎬 Video render ho rahi hai... (2-3 min)")
         out = f"video_{chat_id}_{int(time.time())}.mp4"
         seg = {"keywords": _keywords_from(data), "text": data["script"]}
         render_faceless_segment(seg, audio, out)
-
-        caption = (data.get("caption", "") + "\n# " +
-                   " ".join(data.get("hashtags", [])))
+        caption = (data.get("caption", "") + "\n# " + " ".join(data.get("hashtags", [])))
         send_video(chat_id, out, caption)
-
         for f in (audio, out):
             try:
                 os.remove(f)
             except OSError:
                 pass
-
     except Exception as e:
         send_message(chat_id, f"❌ Error: {e}")
 
@@ -123,11 +134,7 @@ def handle(chat_id, text):
 def main():
     if not TOKEN:
         raise SystemExit("TELEGRAM_TOKEN set nahi hai.")
-    for k in ("ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "PEXELS_API_KEY"):
-        if not os.environ.get(k):
-            print(f"WARNING: {k} set nahi.")
-
-    print("PulseByte Step 5 bot chal raha hai...")
+    print("PulseByte (Step 5 + HeyGen) bot chal raha hai...")
     offset = None
     while True:
         try:
@@ -149,4 +156,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
