@@ -27,7 +27,7 @@ import requests
 import schedule
 from generate_script import generate_script, generate_rated_script
 from make_voice import make_voiceover
-from render_faceless import render_faceless_segment
+from render_faceless import render_faceless_segment, kill_active, reset_cancel
 from render_heygen import make_avatar_test, list_avatars
 from publish import publish_video, list_accounts, upload_media, create_post
 from make_thumbnail import make_thumbnail
@@ -44,9 +44,29 @@ TOPICS_FILE = "topics.txt"
 STATE_FILE = "topic_state.txt"
 TOPICS_LONG_FILE = "topics_long.txt"
 STATE_LONG_FILE = "topic_long_state.txt"
+POSTED_FILE = "posted.txt"
+
+# stop switch: set hone par naya kaam nahi, chalti video cancel
+STOP = threading.Event()
 
 # ek waqt me sirf ek video render ho (Railway memory safe)
 render_lock = threading.Lock()
+
+
+def _norm(t):
+    return (t or "").strip().lower()
+
+
+def _already_posted(topic):
+    if not os.path.exists(POSTED_FILE):
+        return False
+    with open(POSTED_FILE) as f:
+        return _norm(topic) in {_norm(l) for l in f}
+
+
+def _mark_posted(topic):
+    with open(POSTED_FILE, "a") as f:
+        f.write(_norm(topic) + "\n")
 
 
 def send_message(chat_id, text):
@@ -136,7 +156,12 @@ def _send_thumb(chat_id, video_path, title):
 
 def build_video(topic, chat_id=None, tag="", long_form=False):
     """Script -> self-rate (>=QUALITY_MIN) -> voice -> video. (out, caption, data)."""
+    if STOP.is_set():
+        raise RuntimeError("Bot ruka hua hai (stop). 'resume' bhejein.")
     with render_lock:
+        if STOP.is_set():
+            raise RuntimeError("cancelled")
+        reset_cancel()   # fresh build, purana cancel hatao
         threshold = float(os.environ.get("QUALITY_MIN", "7"))
         attempts = int(os.environ.get("QUALITY_ATTEMPTS", "3"))
         dur = 300 if long_form else 30
@@ -186,13 +211,29 @@ def _next_from(topics_file, state_file):
             idx = int(open(state_file).read().strip())
         except ValueError:
             idx = 0
-    topic = topics[idx % len(topics)]
+    # poori list me se pehla NA-posted topic dhoondo (duplicate se bachao)
+    n = len(topics)
+    chosen, chosen_idx = None, idx
+    for step in range(n):
+        i = (idx + step) % n
+        if not _already_posted(topics[i]):
+            chosen, chosen_idx = topics[i], i
+            break
+    if chosen is None:
+        # sab post ho chuke -> log clear karke dobara cycle shuru
+        try:
+            os.remove(POSTED_FILE)
+        except OSError:
+            pass
+        chosen, chosen_idx = topics[idx % n], idx % n
     with open(state_file, "w") as f:
-        f.write(str((idx + 1) % len(topics)))
-    return topic
+        f.write(str((chosen_idx + 1) % n))
+    return chosen
 
 
 def auto_job():
+    if STOP.is_set():
+        return
     topic = _next_from(TOPICS_FILE, STATE_FILE)
     if not topic:
         print("[scheduler] topics.txt khaali/missing")
@@ -204,6 +245,7 @@ def auto_job():
             send_video(OWNER_CHAT_ID, out, f"[AUTO] {data.get('title','')}\n\n{caption}")
         try:
             publish_video(out, caption)
+            _mark_posted(topic)
             print(f"[scheduler] posted: {topic}")
             send_message(OWNER_CHAT_ID, f"\u2705 [AUTO] Posted: {topic}")
         except Exception as e:
@@ -215,10 +257,13 @@ def auto_job():
             pass
     except Exception as e:
         print(f"[scheduler] error: {e}")
-        send_message(OWNER_CHAT_ID, f"\u274C [AUTO] error: {e}")
+        if "cancel" not in str(e).lower():
+            send_message(OWNER_CHAT_ID, f"\u274C [AUTO] error: {e}")
 
 
 def auto_long_job():
+    if STOP.is_set():
+        return
     topic = _next_from(TOPICS_LONG_FILE, STATE_LONG_FILE)
     if not topic:
         print("[long-scheduler] topics_long.txt khaali/missing")
@@ -231,6 +276,7 @@ def auto_long_job():
         try:
             public_url = upload_media(out)
             create_post(public_url, caption, accounts_env=_youtube_only())
+            _mark_posted(topic)
             print(f"[long-scheduler] posted: {topic}")
             send_message(OWNER_CHAT_ID,
                 f"\u2705 [AUTO LONG] YouTube pe post: {data.get('title','')}\n\n"
@@ -244,16 +290,22 @@ def auto_long_job():
             pass
     except Exception as e:
         print(f"[long-scheduler] error: {e}")
-        send_message(OWNER_CHAT_ID, f"\u274C [AUTO LONG] error: {e}")
+        if "cancel" not in str(e).lower():
+            send_message(OWNER_CHAT_ID, f"\u274C [AUTO LONG] error: {e}")
+
+
+def _register_jobs():
+    schedule.clear()
+    if AUTO_POST and not STOP.is_set():
+        schedule.every(SCHEDULE_HOURS).hours.do(auto_job)
+        print(f"[scheduler] SHORT ON: har {SCHEDULE_HOURS} ghante")
+    if AUTO_LONG and not STOP.is_set():
+        schedule.every(LONG_SCHEDULE_HOURS).hours.do(auto_long_job)
+        print(f"[scheduler] LONG ON: har {LONG_SCHEDULE_HOURS} ghante")
 
 
 def run_scheduler():
-    if AUTO_POST:
-        schedule.every(SCHEDULE_HOURS).hours.do(auto_job)
-        print(f"[scheduler] SHORT ON: har {SCHEDULE_HOURS} ghante")
-    if AUTO_LONG:
-        schedule.every(LONG_SCHEDULE_HOURS).hours.do(auto_long_job)
-        print(f"[scheduler] LONG ON: har {LONG_SCHEDULE_HOURS} ghante")
+    _register_jobs()
     while True:
         try:
             schedule.run_pending()
@@ -274,6 +326,9 @@ def handle(chat_id, text):
             "  video: <topic>  -> sirf video\n"
             "  script: <topic> / voice: <topic>\n"
             "  autopost        -> abhi ek auto-cycle (test)\n"
+            "  autolong        -> abhi ek long auto-cycle (test)\n"
+            "  stop            -> sab rok do (chalti video cancel)\n"
+            "  resume          -> dobara chalu\n"
             "  topics          -> topic list\n"
             "  accounts        -> account IDs\n"
             "  avatar: <text> / avatars")
@@ -284,6 +339,22 @@ def handle(chat_id, text):
             send_message(chat_id, "TOPICS:\n" + open(TOPICS_FILE).read())
         else:
             send_message(chat_id, "topics.txt nahi mili.")
+        return
+
+    if low in ("stop", "/stop", "cancel", "/cancel"):
+        STOP.set()
+        schedule.clear()
+        kill_active()   # chalti hui ffmpeg turant band
+        send_message(chat_id,
+            "\U0001F6D1 Rok diya. Chalti hui video cancel, auto-posting band.\n"
+            "Dobara chalu karne ke liye: resume")
+        return
+
+    if low in ("resume", "/resume"):
+        STOP.clear()
+        reset_cancel()
+        _register_jobs()
+        send_message(chat_id, "\u25B6\uFE0F Chalu. Auto-posting bahaal (jo on hain).")
         return
 
     if low in ("autopost", "/autopost"):
@@ -350,6 +421,7 @@ def handle(chat_id, text):
             try:
                 public_url = upload_media(out)
                 create_post(public_url, caption, accounts_env=_youtube_only())
+                _mark_posted(topic)
                 send_message(chat_id,
                     "\u2705 YouTube pe post ho gaya!\n\n"
                     "\U0001F4E5 Facebook ke liye ye video download karein:\n" + public_url)
@@ -368,6 +440,8 @@ def handle(chat_id, text):
         if not topic:
             send_message(chat_id, "Topic khaali hai.")
             return
+        if _already_posted(topic):
+            send_message(chat_id, "\u2139\uFE0F Ye topic pehle post ho chuka — phir bhi bana raha hoon.")
         send_message(chat_id, f"\u23F3 Bana raha hoon: \"{topic}\"...")
         try:
             out, caption, _ = build_video(topic, chat_id=chat_id, tag=f"{chat_id}_")
@@ -375,6 +449,7 @@ def handle(chat_id, text):
             send_message(chat_id, "\U0001F4E4 YouTube/TikTok pe post kar raha hoon...")
             try:
                 publish_video(out, caption)
+                _mark_posted(topic)
                 send_message(chat_id,
                     "\u2705 Post ho gaya!\n"
                     "\U0001F4E5 Facebook ke liye upar wali video download karke daal dein.")
@@ -457,4 +532,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
