@@ -4,3 +4,4 @@ elevenlabs
 mutagen
 faster-whisper
 schedule
+Pillow
