@@ -1,34 +1,26 @@
 """
-make_voice.py
--------------
-Pipeline ka Stage 2: script text ko ElevenLabs se voiceover (mp3) me convert karta hai.
+make_voice.py  (chunking added for long scripts)
+------------------------------------------------
+Script text -> ElevenLabs voiceover (mp3).
+Lambi script (5-min) ko sentence-chunks me TTS karke ffmpeg se jodta hai.
 
-Stage 1 (generate_script.py) ke output ka "script" field yahan input jaata hai.
-Output ek dict: {"audio_path": str, "duration": float}  -- duration se aage
-video ki length set hogi.
-
-Requirements:
-    pip install elevenlabs mutagen
-    export ELEVENLABS_API_KEY="..."   # ya niche api_key paas karein
-
-Model selection:
-    eleven_multilingual_v2  -> high quality (Urdu/Hindi/English narration) [default]
-    eleven_v3               -> sabse expressive, 70+ languages
-    eleven_flash_v2_5       -> low latency (real-time, halki quality)
+Return: {"audio_path": str, "duration": float|None}
+Env: ELEVENLABS_API_KEY
 """
 
 import os
+import re
 import time
+import subprocess
 from elevenlabs.client import ElevenLabs
 
-# Default voice. Apni pasand ki voice ka ID voices.search() se nikaalein (niche helper).
-DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"   # "Rachel" - default female voice
+DEFAULT_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 DEFAULT_MODEL = "eleven_multilingual_v2"
 OUTPUT_FORMAT = "mp3_44100_128"
+CHUNK_LIMIT = 3500   # chars per TTS request (safe)
 
 
 def list_voices(api_key=None):
-    """Aap ke account ki available voices print karta hai (ID + name)."""
     client = ElevenLabs(api_key=api_key or os.environ.get("ELEVENLABS_API_KEY"))
     result = client.voices.search()
     for v in result.voices:
@@ -37,7 +29,6 @@ def list_voices(api_key=None):
 
 
 def _get_duration(path):
-    """mp3 ki length (seconds) nikaalta hai. mutagen na ho to None."""
     try:
         from mutagen.mp3 import MP3
         return round(MP3(path).info.length, 2)
@@ -45,55 +36,76 @@ def _get_duration(path):
         return None
 
 
-def make_voiceover(
-    text,
-    output_path="voiceover.mp3",
-    voice_id=DEFAULT_VOICE_ID,
-    model_id=DEFAULT_MODEL,
-    api_key=None,
-    max_retries=3,
-):
-    """
-    Text ko speech me convert karke mp3 save karta hai.
-    Return: {"audio_path": str, "duration": float | None}
-    """
-    if not text or not text.strip():
-        raise ValueError("Voiceover ke liye text khaali nahi ho sakta.")
+def _split_text(text, limit=CHUNK_LIMIT):
+    """Sentence boundaries pe chunks (har chunk <= limit chars)."""
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    chunks, cur = [], ""
+    for s in sentences:
+        if len(cur) + len(s) + 1 <= limit:
+            cur = (cur + " " + s).strip()
+        else:
+            if cur:
+                chunks.append(cur)
+            cur = s
+    if cur:
+        chunks.append(cur)
+    return chunks or [text]
 
-    client = ElevenLabs(api_key=api_key or os.environ.get("ELEVENLABS_API_KEY"))
 
-    last_error = None
+def _tts_one(client, text, out_path, voice_id, model_id, max_retries=3):
+    last = None
     for attempt in range(1, max_retries + 1):
         try:
-            # convert() audio bytes ka stream/generator return karta hai
-            audio_stream = client.text_to_speech.convert(
-                text=text,
-                voice_id=voice_id,
-                model_id=model_id,
-                output_format=OUTPUT_FORMAT,
-            )
-            with open(output_path, "wb") as f:
-                for chunk in audio_stream:
+            stream = client.text_to_speech.convert(
+                text=text, voice_id=voice_id, model_id=model_id,
+                output_format=OUTPUT_FORMAT)
+            with open(out_path, "wb") as f:
+                for chunk in stream:
                     if chunk:
                         f.write(chunk)
-
-            duration = _get_duration(output_path)
-            return {"audio_path": output_path, "duration": duration}
-
+            return out_path
         except Exception as e:
-            last_error = e
-            time.sleep(2 * attempt)   # rate-limit / network backoff
+            last = e
+            time.sleep(2 * attempt)
+    raise RuntimeError(f"TTS failed: {last}")
 
-    raise RuntimeError(f"Voiceover failed after {max_retries} tries: {last_error}")
+
+def make_voiceover(text, output_path="voiceover.mp3", voice_id=DEFAULT_VOICE_ID,
+                   model_id=DEFAULT_MODEL, api_key=None, max_retries=3):
+    if not text or not text.strip():
+        raise ValueError("Voiceover text khaali nahi ho sakta.")
+    client = ElevenLabs(api_key=api_key or os.environ.get("ELEVENLABS_API_KEY"))
+
+    # chhota text -> ek hi call
+    if len(text) <= CHUNK_LIMIT:
+        _tts_one(client, text, output_path, voice_id, model_id, max_retries)
+        return {"audio_path": output_path, "duration": _get_duration(output_path)}
+
+    # lamba text -> chunks -> jodo
+    chunks = _split_text(text)
+    parts = []
+    base = os.path.splitext(output_path)[0]
+    for i, ch in enumerate(chunks):
+        p = f"{base}_part{i}.mp3"
+        _tts_one(client, ch, p, voice_id, model_id, max_retries)
+        parts.append(p)
+
+    listfile = f"{base}_concat.txt"
+    with open(listfile, "w") as f:
+        for p in parts:
+            f.write(f"file '{os.path.abspath(p)}'\n")
+    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", listfile,
+                    "-c", "copy", output_path],
+                   check=True, capture_output=True)
+    for p in parts + [listfile]:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    return {"audio_path": output_path, "duration": _get_duration(output_path)}
 
 
 if __name__ == "__main__":
-    # Demo. Pehle apni voices dekhein:
-    # list_voices()
-
-    result = make_voiceover(
-        text="Here are three morning habits that will completely change your focus.",
-        output_path="voiceover.mp3",
-        # voice_id="YOUR_VOICE_ID",   # apni voice yahan daalein
-    )
-    print(result)
+    print(make_voiceover("Here are three morning habits that change your focus.",
+                         "voiceover.mp3"))
+    
