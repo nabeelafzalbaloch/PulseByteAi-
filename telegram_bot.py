@@ -519,18 +519,20 @@ def handle(chat_id, text):
         send_message(chat_id, f"\u274C Error: {e}")
 
 
+def _drain_old_updates():
+    """Startup pe purane (bot down ke dauraan aaye) messages skip kar do."""
+    try:
+        r = requests.get(f"{BASE}/getUpdates", params={"timeout": 0, "offset": -1}, timeout=20)
+        results = r.json().get("result", [])
+        if results:
+            return results[-1]["update_id"] + 1
+    except Exception as e:
+        print(f"[startup] drain skip: {e}")
+    return None
+
+
 def main():
     if not TOKEN:
         raise SystemExit("TELEGRAM_TOKEN set nahi hai.")
     print("PulseByteAi bot chal raha hai...")
-    if AUTO_POST or AUTO_LONG:
-        threading.Thread(target=run_scheduler, daemon=True).start()
-    else:
-        print("[scheduler] OFF (AUTO_POST / AUTO_LONG = on karne par chalega)")
-
-    offset = None
-    while True:
-        try:
-            r = requests.get(f"{BASE}/getUpdates",
-                             params={"timeout": 30, "offset": offset}, timeout=40)
-            for update in r.json().get("resu
+    i
