@@ -45,6 +45,15 @@ STATE_FILE = "topic_state.txt"
 TOPICS_LONG_FILE = "topics_long.txt"
 STATE_LONG_FILE = "topic_long_state.txt"
 POSTED_FILE = "posted.txt"
+LESSONS_FILE = "lessons.txt"
+
+
+def _read_lessons():
+    if not os.path.exists(LESSONS_FILE):
+        return ""
+    with open(LESSONS_FILE) as f:
+        lines = [l.strip() for l in f if l.strip()]
+    return "\n".join(f"- {l}" for l in lines[-20:])   # aakhri 20 lessons
 
 # stop switch: set hone par naya kaam nahi, chalti video cancel
 STOP = threading.Event()
@@ -180,7 +189,8 @@ def build_video(topic, chat_id=None, tag="", long_form=False):
         dur = 300 if long_form else 30
         data, score = generate_rated_script(topic, threshold=threshold,
                                             attempts=attempts, duration=dur,
-                                            long_form=long_form)
+                                            long_form=long_form,
+                                            lessons=_read_lessons())
         print(f"[quality] '{topic}' -> {score}/10")
         if chat_id:
             _send_breakdown(chat_id, data)
@@ -342,6 +352,8 @@ def handle(chat_id, text):
             "  autolong        -> abhi ek long auto-cycle (test)\n"
             "  stop            -> sab rok do (chalti video cancel)\n"
             "  resume          -> dobara chalu\n"
+            "  learn: <baat>   -> bot ko seekh do (har script me lagegi)\n"
+            "  lessons         -> seekhें dekho | forget -> hatao\n"
             "  topics          -> topic list\n"
             "  accounts        -> account IDs\n"
             "  avatar: <text> / avatars")
@@ -352,6 +364,31 @@ def handle(chat_id, text):
             send_message(chat_id, "TOPICS:\n" + open(TOPICS_FILE).read())
         else:
             send_message(chat_id, "topics.txt nahi mili.")
+        return
+
+    if low.startswith("learn:"):
+        lesson = text.split(":", 1)[1].strip()
+        if not lesson:
+            send_message(chat_id, "Kuch likho. Misal: learn: YOU/YOUR wali hooks zyada chalti hain.")
+            return
+        with open(LESSONS_FILE, "a") as f:
+            f.write(lesson + "\n")
+        send_message(chat_id,
+            "\u2705 Seekh save ho gayi. Ab har nayi script me ye dhyan rakha jaayega.\n"
+            "(Saari seekh dekhne: lessons | hatane: forget)")
+        return
+
+    if low in ("lessons", "/lessons"):
+        ls = _read_lessons()
+        send_message(chat_id, ("\U0001F4DA Lessons:\n" + ls) if ls else "Abhi koi lesson nahi. 'learn: ...' se add karo.")
+        return
+
+    if low in ("forget", "/forget"):
+        try:
+            os.remove(LESSONS_FILE)
+        except OSError:
+            pass
+        send_message(chat_id, "\U0001F9F9 Saari lessons hata di.")
         return
 
     if low in ("stop", "/stop", "cancel", "/cancel"):
