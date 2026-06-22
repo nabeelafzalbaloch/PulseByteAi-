@@ -1,3 +1,4 @@
+
 """
 generate_script.py  (PulseByteAi — web-researched + AI Uncovered style)
 ----------------------------------------------------------------------
@@ -119,7 +120,7 @@ def _extract_json(text):
 
 def generate_script(topic, video_type="faceless", duration=30, language="English",
                     brand_voice=None, api_key=None, max_retries=3, use_research=True,
-                    long_form=False, feedback=""):
+                    long_form=False, feedback="", lessons=""):
     brand_voice = brand_voice if brand_voice is not None else os.environ.get("BRAND_VOICE", "")
     client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
 
@@ -138,6 +139,8 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
         user.append(f"\nVERIFIED WEB FACTS (use these):\n{facts}")
     else:
         user.append("\n(No web facts available — use your own knowledge, stay accurate.)")
+    if lessons:
+        user.append(f"\nCREATOR LESSONS from past performance — APPLY these:\n{lessons}")
     if feedback:
         user.append(f"\nIMPROVE ON THE LAST ATTEMPT. Reviewer feedback to fix:\n{feedback}")
     user.append("\nGenerate the full PulseByteAi JSON now.")
