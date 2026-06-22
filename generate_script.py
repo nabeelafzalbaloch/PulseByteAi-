@@ -112,7 +112,7 @@ def _extract_json(text):
 
 def generate_script(topic, video_type="faceless", duration=30, language="English",
                     brand_voice=None, api_key=None, max_retries=3, use_research=True,
-                    long_form=False):
+                    long_form=False, feedback=""):
     brand_voice = brand_voice if brand_voice is not None else os.environ.get("BRAND_VOICE", "")
     client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
 
@@ -131,6 +131,8 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
         user.append(f"\nVERIFIED WEB FACTS (use these):\n{facts}")
     else:
         user.append("\n(No web facts available — use your own knowledge, stay accurate.)")
+    if feedback:
+        user.append(f"\nIMPROVE ON THE LAST ATTEMPT. Reviewer feedback to fix:\n{feedback}")
     user.append("\nGenerate the full PulseByteAi JSON now.")
     prompt = "\n".join(user)
 
@@ -177,9 +179,59 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
     raise RuntimeError(f"Script generation failed: {last_error}")
 
 
+EVAL_SYSTEM = """You are a veteran YouTube content strategist and SEO specialist.
+Rate a short-form video plan strictly from 1 to 10 on: hook strength (first 3 seconds),
+retention/pacing, SEO (title + keywords + description), and clarity. Be honest and
+critical; most drafts are a 6 or 7. Return ONLY JSON, no markdown:
+{"score": <number 1-10>, "strengths":"...", "weaknesses":"...", "fixes":"specific, actionable improvements"}"""
+
+
+def evaluate_content(data, api_key=None):
+    """Script plan ko rate karta hai. Return {score, strengths, weaknesses, fixes}."""
+    client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+    plan = (f"TITLE: {data.get('title','')}\n"
+            f"HOOK: {data.get('hook','')}\n"
+            f"SCRIPT: {data.get('script','')}\n"
+            f"DESCRIPTION: {data.get('description','')}\n"
+            f"KEYWORDS: {', '.join(data.get('keywords', []))}\n"
+            f"HASHTAGS: {' '.join(data.get('hashtags', []))}")
+    try:
+        resp = client.messages.create(
+            model=MODEL, max_tokens=600, system=EVAL_SYSTEM,
+            messages=[{"role": "user", "content": plan + "\n\nRate it now (JSON only)."}],
+        )
+        ev = _extract_json(resp.content[0].text)
+        ev["score"] = float(ev.get("score", 0))
+        return ev
+    except Exception as e:
+        # eval fail -> neutral pass (taake pipeline na ruke)
+        return {"score": 7.0, "strengths": "", "weaknesses": "",
+                "fixes": "", "_eval_error": str(e)}
+
+
+def generate_rated_script(topic, threshold=7.0, attempts=3, **kwargs):
+    """generate -> self-rate -> agar score < threshold to feedback ke saath dobara.
+    Return (best_data, best_score). best_data me '_score' aur '_eval' bhi hote hain."""
+    api_key = kwargs.get("api_key")
+    best, best_score, feedback = None, -1.0, ""
+    for _ in range(max(1, attempts)):
+        data = generate_script(topic, feedback=feedback, **kwargs)
+        ev = evaluate_content(data, api_key=api_key)
+        score = ev.get("score", 0)
+        data["_score"] = score
+        data["_eval"] = ev
+        if score > best_score:
+            best, best_score = data, score
+        if score >= threshold:
+            break
+        feedback = (f"Score was {score}/10. Weaknesses: {ev.get('weaknesses','')}. "
+                    f"Fixes: {ev.get('fixes','')}")
+    return best, best_score
+
+
 if __name__ == "__main__":
-    r = generate_script("AI that can clone your voice in 3 seconds", duration=40)
-    print("RESEARCHED:", r.get("researched"))
-    print("TITLE:", r["title"])
-    print("HOOK:", r["hook"])
+    data, score = generate_rated_script("AI that can clone your voice in 3 seconds")
+    print("SCORE:", score)
+    print("TITLE:", data["title"])
+    print("HOOK:", data["hook"])
   
