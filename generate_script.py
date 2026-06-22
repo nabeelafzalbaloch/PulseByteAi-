@@ -36,11 +36,13 @@ a threat, or something that feels forbidden about AI/technology. This is what al
 works on the channel (top videos: a "ghost" in your phone, AI taking jobs, fake AI voices).
 
 === RETENTION RULES (the channel's #1 problem is people swiping away) ===
-- The first 3 WORDS must create tension or name a threat. No slow intros, no "In this video".
-- TEASE, don't explain. Make them stay to "find out."
-- Every 5-7 seconds add a new turn/hook ("But here's the scary part...").
-- End each fact UNFINISHED so the viewer can't swipe.
-- Punchy, rhythmic, easy for an AI voice (ElevenLabs) to speak. Avoid cliches.
+- THE 3-SECOND HOOK: open with a PATTERN INTERRUPT — a shocking fact or counter-intuitive
+  claim. The first 3 WORDS must create tension or name a threat. No "In this video", no slow intro.
+- PACING: keep sentences UNDER 12 WORDS. Punchy, rhythmic, easy for an AI voice (ElevenLabs).
+- CURIOSITY GAP: every ~20 seconds, hint at a "hidden truth" that you reveal slightly later.
+  Reveal enough to intrigue, hide enough that they must keep watching.
+- TEASE, don't explain. End each fact UNFINISHED so the viewer can't swipe.
+- TONE: dark, urgent, conspiratorial, but data-backed (use the verified facts).
 
 === USE THE FACTS ===
 If VERIFIED WEB FACTS are provided, build the script on them (accurate, specific, current).
@@ -57,17 +59,22 @@ WRITE THE SCRIPT:
 - BODY: 3-5 punchy segments, each a bullet-style fact ending on a micro-cliffhanger.
 - CTA (end): "Follow PulseByte..." + tease the next episode. Invite a comment.
 
-ALSO PRODUCE: TITLE (clickable, <=60 chars), DESCRIPTION (~200 words),
-KEYWORDS (5), HASHTAGS (exactly 3), VIDEO_FLOW_NOTES (pacing + where transitions hit).
+ALSO PRODUCE (SEO):
+- TITLE_OPTIONS: exactly 3 titles — (1) clickbait/controversial, (2) search-optimized,
+  (3) question-based. Then pick the strongest as "title" (<=60 chars).
+- KEYWORDS: 5 total = 3 broad (e.g. AI, future tech) + 2 specific long-tail.
+- HASHTAGS: exactly 3 relevant.
+- DESCRIPTION (~200 words), VIDEO_FLOW_NOTES (pacing + where transitions hit).
 
 Respond with ONLY valid JSON, no markdown:
 {
-  "title":"(<=60 chars)",
+  "title_options":["clickbait title","search title","question title"],
+  "title":"(<=60 chars, the best one)",
   "hook_options":[{"hook":"...","framework":"...","score":9,"why":"..."}],
   "hook":"best hook","hook_type":"framework",
   "script":"hook + bullet facts + CTA",
   "scenes":[{"text":"line (micro-cliffhanger)","visual":"what to show","keywords":["stock","terms"]}],
-  "description":"~200 words","keywords":["k1","k2","k3","k4","k5"],
+  "description":"~200 words","keywords":["broad1","broad2","broad3","longtail1","longtail2"],
   "hashtags":["#a","#b","#c"],"video_flow_notes":"..."
 }"""
 
@@ -76,11 +83,11 @@ channel (UK/USA) about AI and future technology. Write a LONG-FORM YouTube scrip
 (several minutes) that is informative, engaging, and keeps viewers watching.
 
 STRUCTURE (for a ~5 minute video, ~700-800 spoken words):
-- HOOK (first 15s): a strong reason to keep watching.
-- INTRO: what this video covers and why it matters to the viewer.
-- 5 to 7 SECTIONS: each one clear point with detail, an example, and a smooth transition
-  to the next. Keep language simple, confident, and natural for an AI voice (ElevenLabs).
-- RECAP + CTA: quick summary, ask to subscribe and comment, tease the next video.
+- 0:00-0:30 — THE HOOK: a pattern interrupt + why this matters RIGHT NOW.
+- 0:30-4:00 — 5 DETAILED CHAPTERS: each chapter teaches one clear point with an example,
+  and ENDS ON A PATTERN INTERRUPT or mini-cliffhanger that pulls the viewer into the next.
+- 4:00-5:00 — RECAP + a CTA that forces a deep comment (ask a specific opinion question).
+- Keep sentences punchy. Natural for an AI voice. Build on the verified facts.
 
 Accuracy: if VERIFIED WEB FACTS are given, build on them. Don't invent specifics.
 Tone: knowledgeable but easy to follow. Avoid filler and repetition.
@@ -179,10 +186,14 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
     raise RuntimeError(f"Script generation failed: {last_error}")
 
 
-EVAL_SYSTEM = """You are a veteran YouTube content strategist and SEO specialist.
-Rate a short-form video plan strictly from 1 to 10 on: hook strength (first 3 seconds),
-retention/pacing, SEO (title + keywords + description), and clarity. Be honest and
-critical; most drafts are a 6 or 7. Return ONLY JSON, no markdown:
+EVAL_SYSTEM = """You are a Master Content Strategist & Retention Specialist for short-form
+AI-niche video (UK/USA). Rate the script 1-10 using these WEIGHTED criteria:
+- Hook Strength (40%): is the first 3 seconds impossible to swipe away from?
+- Curiosity Gap (30%): does it reveal enough to intrigue but hide enough to force watching?
+- Pacing (20%): fast, rhythmic, punchy, sentences under 12 words?
+- SEO Compatibility (10%): are keywords integrated naturally into title/description?
+Be strict; most drafts are a 6 or 7. Compute the weighted score.
+Return ONLY JSON, no markdown:
 {"score": <number 1-10>, "strengths":"...", "weaknesses":"...", "fixes":"specific, actionable improvements"}"""
 
 
@@ -234,4 +245,3 @@ if __name__ == "__main__":
     print("SCORE:", score)
     print("TITLE:", data["title"])
     print("HOOK:", data["hook"])
-  
