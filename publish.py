@@ -71,14 +71,12 @@ def _parse_accounts(env_value):
     return platforms
 
 
-def publish_video(file_path, caption, api_key=None, accounts_env=None):
-    """Video upload + post (publishNow). Zernio response return."""
+def create_post(public_url, caption, api_key=None, accounts_env=None):
+    """Pehle se uploaded media URL ko platforms pe post karta hai."""
     api_key = api_key or os.environ.get("ZERNIO_API_KEY")
     platforms = _parse_accounts(accounts_env or os.environ.get("ZERNIO_ACCOUNTS", ""))
     if not platforms:
-        raise RuntimeError("ZERNIO_ACCOUNTS set nahi (e.g. youtube:acc_1,tiktok:acc_2). "
-                           "'accounts' command se IDs lein.")
-    public_url = upload_media(file_path, api_key)
+        raise RuntimeError("Accounts set nahi (ZERNIO_ACCOUNTS / ZERNIO_ACCOUNTS_LONG).")
     body = {
         "content": caption[:1000],
         "mediaItems": [{"url": public_url, "type": "video"}],
@@ -93,6 +91,13 @@ def publish_video(file_path, caption, api_key=None, accounts_env=None):
     if r.status_code >= 400:
         raise RuntimeError(f"Zernio post failed ({r.status_code}): {r.text[:300]}")
     return r.json()
+
+
+def publish_video(file_path, caption, api_key=None, accounts_env=None):
+    """Video upload + post (publishNow). Zernio response return."""
+    api_key = api_key or os.environ.get("ZERNIO_API_KEY")
+    public_url = upload_media(file_path, api_key)
+    return create_post(public_url, caption, api_key, accounts_env)
 
 
 if __name__ == "__main__":
