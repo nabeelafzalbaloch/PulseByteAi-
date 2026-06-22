@@ -29,7 +29,7 @@ from generate_script import generate_script
 from make_voice import make_voiceover
 from render_faceless import render_faceless_segment
 from render_heygen import make_avatar_test, list_avatars
-from publish import publish_video, list_accounts
+from publish import publish_video, list_accounts, upload_media, create_post
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 BASE = f"https://api.telegram.org/bot{TOKEN}"
@@ -92,19 +92,37 @@ def _send_breakdown(chat_id, d):
         f"\U0001F3AC FLOW NOTES:\n{d.get('video_flow_notes','')}")
 
 
-def build_video(topic, chat_id=None, tag=""):
+def _youtube_only():
+    """Long video ke liye sirf youtube account (ZERNIO_ACCOUNTS_LONG ya filter)."""
+    explicit = os.environ.get("ZERNIO_ACCOUNTS_LONG")
+    if explicit:
+        return explicit
+    accs = os.environ.get("ZERNIO_ACCOUNTS", "")
+    yt = [p.strip() for p in accs.split(",") if p.strip().lower().startswith("youtube:")]
+    return ",".join(yt)
+
+
+def build_video(topic, chat_id=None, tag="", long_form=False):
     """Script -> voice -> video. (out_path, caption, data). render_lock ke andar."""
     with render_lock:
-        data = generate_script(topic, duration=30)
+        if long_form:
+            data = generate_script(topic, duration=300, long_form=True)
+        else:
+            data = generate_script(topic, duration=30)
         if chat_id:
             _send_breakdown(chat_id, data)
         audio = f"audio_{tag}{int(time.time())}.mp3"
         make_voiceover(data["script"], audio)
         if chat_id:
-            send_message(chat_id, "\U0001F3AC Video render ho rahi hai... (2-3 min)")
+            send_message(chat_id, "\U0001F3AC Video render ho rahi hai...")
         out = f"video_{tag}{int(time.time())}.mp4"
         seg = {"keywords": _keywords_from(data), "text": data["script"]}
-        render_faceless_segment(seg, audio, out)
+        if long_form:
+            render_faceless_segment(seg, audio, out, vertical=False,
+                                    max_clip_seconds=6, unique_clips=15,
+                                    add_captions=False)
+        else:
+            render_faceless_segment(seg, audio, out)
         try:
             os.remove(audio)
         except OSError:
@@ -177,6 +195,7 @@ def handle(chat_id, text):
         send_message(chat_id,
             "PulseByteAi\n\n"
             "  post: <topic>   -> video + YouTube/TikTok pe post\n"
+            "  long: <topic>   -> 5-min horizontal video + YouTube (FB manual)\n"
             "  video: <topic>  -> sirf video\n"
             "  script: <topic> / voice: <topic>\n"
             "  autopost        -> abhi ek auto-cycle (test)\n"
@@ -234,6 +253,33 @@ def handle(chat_id, text):
             os.remove(out)
         except Exception as e:
             send_message(chat_id, f"\u274C HeyGen error: {e}")
+        return
+
+    if low.startswith("long:"):
+        topic = text.split(":", 1)[1].strip()
+        if not topic:
+            send_message(chat_id, "Topic khaali hai.")
+            return
+        send_message(chat_id,
+            f"\u23F3 Long video bana raha hoon (~5 min, thoda waqt lagega): \"{topic}\"...")
+        try:
+            out, caption, _ = build_video(topic, chat_id=chat_id,
+                                          tag=f"long_{chat_id}_", long_form=True)
+            send_message(chat_id, "\U0001F4E4 Zernio pe upload + YouTube post...")
+            try:
+                public_url = upload_media(out)
+                create_post(public_url, caption, accounts_env=_youtube_only())
+                send_message(chat_id,
+                    "\u2705 YouTube pe post ho gaya!\n\n"
+                    "\U0001F4E5 Facebook ke liye ye video download karein:\n" + public_url)
+            except Exception as e:
+                send_message(chat_id, f"\u26A0\uFE0F Post/upload fail: {e}")
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+        except Exception as e:
+            send_message(chat_id, f"\u274C Error: {e}")
         return
 
     if low.startswith("post:"):
@@ -330,4 +376,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
