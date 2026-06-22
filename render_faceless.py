@@ -17,6 +17,7 @@ Note: faster-whisper pehli dafa model download karega (base ~150MB).
 
 import os
 import subprocess
+import threading
 import requests
 from faster_whisper import WhisperModel
 
@@ -33,6 +34,27 @@ EFFECTS = os.environ.get("EFFECTS", "on").lower() == "on"
 # crossfade transition ki length (seconds)
 TRANSITION = float(os.environ.get("TRANSITION", "0.6"))
 
+# ----- cancel switch (stop command isse current render rok deta hai) -----
+CANCEL = threading.Event()
+_ACTIVE_PROCS = set()
+_PROC_LOCK = threading.Lock()
+
+
+def kill_active():
+    """Cancel set karo aur chalti hui ffmpeg process maar do."""
+    CANCEL.set()
+    with _PROC_LOCK:
+        for p in list(_ACTIVE_PROCS):
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+
+def reset_cancel():
+    CANCEL.clear()
+
+
 # Whisper model ek dafa load -> reuse (memory bachta hai)
 _WHISPER = None
 
@@ -45,10 +67,21 @@ def _whisper():
 
 
 def _run(cmd):
-    """ffmpeg command chalata hai, error pe exception."""
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed:\n{res.stderr[-800:]}")
+    """ffmpeg command chalata hai (cancellable), error pe exception."""
+    if CANCEL.is_set():
+        raise RuntimeError("cancelled")
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    with _PROC_LOCK:
+        _ACTIVE_PROCS.add(p)
+    try:
+        _, err = p.communicate()
+    finally:
+        with _PROC_LOCK:
+            _ACTIVE_PROCS.discard(p)
+    if CANCEL.is_set():
+        raise RuntimeError("cancelled")
+    if p.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed:\n{(err or '')[-800:]}")
 
 
 def _media_duration(path):
@@ -309,4 +342,4 @@ if __name__ == "__main__":
     # make_voiceover(seg["text"], "seg_audio.mp3")
     render_faceless_segment(seg, "seg_audio.mp3", "faceless_segment.mp4")
     print("Done -> faceless_segment.mp4")
-  
+      
