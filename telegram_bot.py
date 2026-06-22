@@ -25,7 +25,7 @@ import time
 import threading
 import requests
 import schedule
-from generate_script import generate_script
+from generate_script import generate_script, generate_rated_script
 from make_voice import make_voiceover
 from render_faceless import render_faceless_segment
 from render_heygen import make_avatar_test, list_avatars
@@ -135,14 +135,23 @@ def _send_thumb(chat_id, video_path, title):
 
 
 def build_video(topic, chat_id=None, tag="", long_form=False):
-    """Script -> voice -> video. (out_path, caption, data). render_lock ke andar."""
+    """Script -> self-rate (>=QUALITY_MIN) -> voice -> video. (out, caption, data)."""
     with render_lock:
-        if long_form:
-            data = generate_script(topic, duration=300, long_form=True)
-        else:
-            data = generate_script(topic, duration=30)
+        threshold = float(os.environ.get("QUALITY_MIN", "7"))
+        attempts = int(os.environ.get("QUALITY_ATTEMPTS", "3"))
+        dur = 300 if long_form else 30
+        data, score = generate_rated_script(topic, threshold=threshold,
+                                            attempts=attempts, duration=dur,
+                                            long_form=long_form)
+        print(f"[quality] '{topic}' -> {score}/10")
         if chat_id:
             _send_breakdown(chat_id, data)
+            send_message(chat_id, f"\u2B50 Quality score: {score}/10 (min {threshold})")
+        if score < threshold:
+            fixes = (data.get("_eval") or {}).get("fixes", "")
+            raise RuntimeError(
+                f"Quality {score}/10 < {threshold} ({attempts} koshish ke baad) — "
+                f"video skip ki. Behtari: {fixes[:200]}")
         audio = f"audio_{tag}{int(time.time())}.mp3"
         make_voiceover(data["script"], audio)
         if chat_id:
@@ -448,4 +457,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-                       
+    
