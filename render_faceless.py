@@ -195,18 +195,25 @@ def render_faceless_segment(
     if not urls:
         raise RuntimeError("Pexels/Pixabay se koi clip nahi mili.")
 
-    # 2) clip count CAP karo (Railway memory ke liye), uniform per_clip nikaalo
-    MAX_CLIPS = int(os.environ.get("MAX_CLIPS", "5"))
-    n = max(2, min(MAX_CLIPS, round(audio_dur / 6) or 2))
-    if not EFFECTS:
-        n = max(1, min(MAX_CLIPS, round(audio_dur / 6) or 1))
-    # total = n*per_clip - (n-1)*T  ==  audio_dur  -> per_clip nikaalo
-    t_loss = (n - 1) * TRANSITION if EFFECTS else 0
-    per_clip = max(TRANSITION + 1.5, (audio_dur + t_loss) / n)
+    # 2) per_clip <= 3 sec (fast pacing). Zyada clips -> hard cuts (memory-safe)
+    MAX_CLIP_SECONDS = float(os.environ.get("MAX_CLIP_SECONDS", "3"))
+    XFADE_MAX = int(os.environ.get("XFADE_MAX_CLIPS", "6"))
+    HARD_CAP = int(os.environ.get("MAX_CLIPS", "40"))
 
-    # 3) sirf n clips download + normalize (loop se exact per_clip)
+    per_clip = max(1.2, min(MAX_CLIP_SECONDS, audio_dur))
+    use_xfade = EFFECTS
+    if use_xfade:
+        n = int(audio_dur / max(0.5, per_clip - TRANSITION)) + 1
+    else:
+        n = int(audio_dur / per_clip) + 1
+    n = max(2, min(HARD_CAP, n))
+    if n > XFADE_MAX:        # bohot clips -> crossfade memory kha jaata hai
+        use_xfade = False
+
+    # 3) thodi UNIQUE clips download/normalize, phir cycle karke n slots
+    unique = max(1, min(n, len(urls), int(os.environ.get("UNIQUE_CLIPS", "6"))))
     norm_clips = []
-    for i in range(n):
+    for i in range(unique):
         url = urls[i % len(urls)]
         raw = os.path.join(workdir, f"raw_{i}.mp4")
         norm = os.path.join(workdir, f"norm_{i}.mp4")
@@ -218,7 +225,7 @@ def render_faceless_segment(
             print(f"  clip {i} skip: {e}")
     if not norm_clips:
         raise RuntimeError("Koi clip normalize nahi hui.")
-    seq = norm_clips
+    seq = [norm_clips[i % len(norm_clips)] for i in range(n)]
 
     # 4) captions
     srt = None
@@ -229,7 +236,7 @@ def render_faceless_segment(
              "OutlineColour=&H00000000,Outline=3,Alignment=2,MarginV=240")
     fade_out_st = max(0.0, audio_dur - 0.5)
 
-    if EFFECTS and len(seq) > 1:
+    if use_xfade and len(seq) > 1:
         # ---- EFFECTS: crossfade + fade in/out (format-forced, thread-limited) ----
         cmd = ["ffmpeg", "-y", "-threads", "2"]
         for c in seq:
@@ -265,17 +272,10 @@ def render_faceless_segment(
         _run(cmd)
         return output_path
 
-    # ---- fallback: concat + fade in/out (EFFECTS off ya 1 clip) ----
-    # clips ko audio cover karne ke liye loop (concat low-memory hai)
-    full_seq, total = [], 0.0
-    j = 0
-    while total < audio_dur + per_clip:
-        full_seq.append(seq[j % len(seq)])
-        total += per_clip
-        j += 1
+    # ---- hard-cut concat + fade in/out (memory-safe for many 3-sec clips) ----
     concat_file = os.path.join(workdir, "concat.txt")
     with open(concat_file, "w") as f:
-        for c in full_seq:
+        for c in seq:
             f.write(f"file '{os.path.abspath(c)}'\n")
     silent = os.path.join(workdir, "silent.mp4")
     _run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_file,
