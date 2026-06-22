@@ -30,15 +30,20 @@ from make_voice import make_voiceover
 from render_faceless import render_faceless_segment
 from render_heygen import make_avatar_test, list_avatars
 from publish import publish_video, list_accounts, upload_media, create_post
+from make_thumbnail import make_thumbnail
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 BASE = f"https://api.telegram.org/bot{TOKEN}"
 
 AUTO_POST = os.environ.get("AUTO_POST", "off").lower() == "on"
 SCHEDULE_HOURS = float(os.environ.get("SCHEDULE_HOURS", "6"))
+AUTO_LONG = os.environ.get("AUTO_LONG", "off").lower() == "on"
+LONG_SCHEDULE_HOURS = float(os.environ.get("LONG_SCHEDULE_HOURS", "48"))
 OWNER_CHAT_ID = os.environ.get("OWNER_CHAT_ID")
 TOPICS_FILE = "topics.txt"
 STATE_FILE = "topic_state.txt"
+TOPICS_LONG_FILE = "topics_long.txt"
+STATE_LONG_FILE = "topic_long_state.txt"
 
 # ek waqt me sirf ek video render ho (Railway memory safe)
 render_lock = threading.Lock()
@@ -64,6 +69,15 @@ def send_video(chat_id, path, caption=""):
         requests.post(f"{BASE}/sendVideo",
                       data={"chat_id": chat_id, "caption": caption[:1000]},
                       files={"video": f}, timeout=600)
+
+
+def send_photo(chat_id, path, caption=""):
+    if not chat_id:
+        return
+    with open(path, "rb") as f:
+        requests.post(f"{BASE}/sendPhoto",
+                      data={"chat_id": chat_id, "caption": caption[:1000]},
+                      files={"photo": f}, timeout=120)
 
 
 def _keywords_from(data):
@@ -102,6 +116,24 @@ def _youtube_only():
     return ",".join(yt)
 
 
+def _send_thumb(chat_id, video_path, title):
+    """Thumbnail bana kar Telegram pe bhejta hai (non-fatal)."""
+    if not chat_id:
+        return
+    try:
+        thumb = f"thumb_{int(time.time())}.jpg"
+        make_thumbnail(video_path, title, thumb)
+        send_photo(chat_id, thumb,
+                   "\U0001F5BC\uFE0F Thumbnail — YouTube Studio me 'custom thumbnail' "
+                   "se upload kar dein.")
+        try:
+            os.remove(thumb)
+        except OSError:
+            pass
+    except Exception as e:
+        print(f"[thumb] fail: {e}")
+
+
 def build_video(topic, chat_id=None, tag="", long_form=False):
     """Script -> voice -> video. (out_path, caption, data). render_lock ke andar."""
     with render_lock:
@@ -118,9 +150,10 @@ def build_video(topic, chat_id=None, tag="", long_form=False):
         out = f"video_{tag}{int(time.time())}.mp4"
         seg = {"keywords": _keywords_from(data), "text": data["script"]}
         if long_form:
+            long_caps = os.environ.get("LONG_CAPTIONS", "off").lower() == "on"
             render_faceless_segment(seg, audio, out, vertical=False,
                                     max_clip_seconds=6, unique_clips=15,
-                                    add_captions=False)
+                                    add_captions=long_caps)
         else:
             render_faceless_segment(seg, audio, out)
         try:
@@ -131,27 +164,27 @@ def build_video(topic, chat_id=None, tag="", long_form=False):
 
 
 # ---------------- AUTO SCHEDULER ----------------
-def _next_topic():
-    if not os.path.exists(TOPICS_FILE):
+def _next_from(topics_file, state_file):
+    if not os.path.exists(topics_file):
         return None
-    with open(TOPICS_FILE) as f:
+    with open(topics_file) as f:
         topics = [l.strip() for l in f if l.strip()]
     if not topics:
         return None
     idx = 0
-    if os.path.exists(STATE_FILE):
+    if os.path.exists(state_file):
         try:
-            idx = int(open(STATE_FILE).read().strip())
+            idx = int(open(state_file).read().strip())
         except ValueError:
             idx = 0
     topic = topics[idx % len(topics)]
-    with open(STATE_FILE, "w") as f:
+    with open(state_file, "w") as f:
         f.write(str((idx + 1) % len(topics)))
     return topic
 
 
 def auto_job():
-    topic = _next_topic()
+    topic = _next_from(TOPICS_FILE, STATE_FILE)
     if not topic:
         print("[scheduler] topics.txt khaali/missing")
         return
@@ -176,9 +209,42 @@ def auto_job():
         send_message(OWNER_CHAT_ID, f"\u274C [AUTO] error: {e}")
 
 
+def auto_long_job():
+    topic = _next_from(TOPICS_LONG_FILE, STATE_LONG_FILE)
+    if not topic:
+        print("[long-scheduler] topics_long.txt khaali/missing")
+        return
+    print(f"[long-scheduler] AUTO LONG topic: {topic}")
+    try:
+        out, caption, data = build_video(topic, chat_id=None,
+                                         tag="autolong_", long_form=True)
+        _send_thumb(OWNER_CHAT_ID, out, data.get("title", topic))
+        try:
+            public_url = upload_media(out)
+            create_post(public_url, caption, accounts_env=_youtube_only())
+            print(f"[long-scheduler] posted: {topic}")
+            send_message(OWNER_CHAT_ID,
+                f"\u2705 [AUTO LONG] YouTube pe post: {data.get('title','')}\n\n"
+                f"\U0001F4E5 Facebook ke liye download:\n{public_url}")
+        except Exception as e:
+            print(f"[long-scheduler] post fail: {e}")
+            send_message(OWNER_CHAT_ID, f"\u26A0\uFE0F [AUTO LONG] post fail: {e}")
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+    except Exception as e:
+        print(f"[long-scheduler] error: {e}")
+        send_message(OWNER_CHAT_ID, f"\u274C [AUTO LONG] error: {e}")
+
+
 def run_scheduler():
-    schedule.every(SCHEDULE_HOURS).hours.do(auto_job)
-    print(f"[scheduler] ON: har {SCHEDULE_HOURS} ghante auto-post")
+    if AUTO_POST:
+        schedule.every(SCHEDULE_HOURS).hours.do(auto_job)
+        print(f"[scheduler] SHORT ON: har {SCHEDULE_HOURS} ghante")
+    if AUTO_LONG:
+        schedule.every(LONG_SCHEDULE_HOURS).hours.do(auto_long_job)
+        print(f"[scheduler] LONG ON: har {LONG_SCHEDULE_HOURS} ghante")
     while True:
         try:
             schedule.run_pending()
@@ -214,6 +280,11 @@ def handle(chat_id, text):
     if low in ("autopost", "/autopost"):
         send_message(chat_id, "\u23F3 Auto-cycle chala raha hoon (ek topic)...")
         threading.Thread(target=auto_job, daemon=True).start()
+        return
+
+    if low in ("autolong", "/autolong"):
+        send_message(chat_id, "\u23F3 Long auto-cycle chala raha hoon (~5 min)...")
+        threading.Thread(target=auto_long_job, daemon=True).start()
         return
 
     if low in ("accounts", "/accounts"):
@@ -263,8 +334,9 @@ def handle(chat_id, text):
         send_message(chat_id,
             f"\u23F3 Long video bana raha hoon (~5 min, thoda waqt lagega): \"{topic}\"...")
         try:
-            out, caption, _ = build_video(topic, chat_id=chat_id,
-                                          tag=f"long_{chat_id}_", long_form=True)
+            out, caption, data = build_video(topic, chat_id=chat_id,
+                                             tag=f"long_{chat_id}_", long_form=True)
+            _send_thumb(chat_id, out, data.get("title", topic))
             send_message(chat_id, "\U0001F4E4 Zernio pe upload + YouTube post...")
             try:
                 public_url = upload_media(out)
@@ -351,10 +423,10 @@ def main():
     if not TOKEN:
         raise SystemExit("TELEGRAM_TOKEN set nahi hai.")
     print("PulseByteAi bot chal raha hai...")
-    if AUTO_POST:
+    if AUTO_POST or AUTO_LONG:
         threading.Thread(target=run_scheduler, daemon=True).start()
     else:
-        print("[scheduler] OFF (AUTO_POST=on karne par chalega)")
+        print("[scheduler] OFF (AUTO_POST / AUTO_LONG = on karne par chalega)")
 
     offset = None
     while True:
@@ -376,3 +448,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                       
