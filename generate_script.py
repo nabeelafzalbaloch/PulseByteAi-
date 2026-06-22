@@ -71,6 +71,35 @@ Respond with ONLY valid JSON, no markdown:
   "hashtags":["#a","#b","#c"],"video_flow_notes":"..."
 }"""
 
+LONG_SYSTEM_PROMPT = """You are the head scriptwriter for PulseByteAi, an English YouTube
+channel (UK/USA) about AI and future technology. Write a LONG-FORM YouTube script
+(several minutes) that is informative, engaging, and keeps viewers watching.
+
+STRUCTURE (for a ~5 minute video, ~700-800 spoken words):
+- HOOK (first 15s): a strong reason to keep watching.
+- INTRO: what this video covers and why it matters to the viewer.
+- 5 to 7 SECTIONS: each one clear point with detail, an example, and a smooth transition
+  to the next. Keep language simple, confident, and natural for an AI voice (ElevenLabs).
+- RECAP + CTA: quick summary, ask to subscribe and comment, tease the next video.
+
+Accuracy: if VERIFIED WEB FACTS are given, build on them. Don't invent specifics.
+Tone: knowledgeable but easy to follow. Avoid filler and repetition.
+
+ALSO PRODUCE: TITLE (<=60 chars, SEO), DESCRIPTION (~200 words), KEYWORDS (5),
+HASHTAGS (3), VIDEO_FLOW_NOTES, and SCENES (10-14 items) each with diverse visual
+keywords so the video has variety.
+
+Respond with ONLY valid JSON, no markdown:
+{
+  "title":"(<=60 chars)",
+  "hook_options":[{"hook":"...","framework":"...","score":9,"why":"..."}],
+  "hook":"best hook","hook_type":"framework",
+  "script":"full long-form spoken voiceover: hook, intro, sections, recap, CTA",
+  "scenes":[{"text":"section line","visual":"what to show","keywords":["stock","terms"]}],
+  "description":"~200 words","keywords":["k1","k2","k3","k4","k5"],
+  "hashtags":["#a","#b","#c"],"video_flow_notes":"..."
+}"""
+
 
 def _extract_json(text):
     text = text.strip()
@@ -82,11 +111,14 @@ def _extract_json(text):
 
 
 def generate_script(topic, video_type="faceless", duration=30, language="English",
-                    brand_voice=None, api_key=None, max_retries=3, use_research=True):
+                    brand_voice=None, api_key=None, max_retries=3, use_research=True,
+                    long_form=False):
     brand_voice = brand_voice if brand_voice is not None else os.environ.get("BRAND_VOICE", "")
     client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
 
     facts = research_topic(topic) if use_research else ""
+    system = LONG_SYSTEM_PROMPT if long_form else SYSTEM_PROMPT
+    max_tokens = 4000 if long_form else 2500
 
     user = [
         f"Topic: {topic}",
@@ -106,7 +138,7 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
     for attempt in range(1, max_retries + 1):
         try:
             resp = client.messages.create(
-                model=MODEL, max_tokens=2500, system=SYSTEM_PROMPT,
+                model=MODEL, max_tokens=max_tokens, system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
             data = _extract_json(resp.content[0].text)
@@ -150,4 +182,4 @@ if __name__ == "__main__":
     print("RESEARCHED:", r.get("researched"))
     print("TITLE:", r["title"])
     print("HOOK:", r["hook"])
-    
+  
