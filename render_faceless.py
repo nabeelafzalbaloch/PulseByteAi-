@@ -61,8 +61,8 @@ def _media_duration(path):
     return float(out)
 
 
-def search_pexels(keywords, api_key=None, per_query=2):
-    """Pexels se portrait video clips ke download URLs nikaalta hai."""
+def search_pexels(keywords, api_key=None, per_query=2, orientation="portrait"):
+    """Pexels se video clips ke download URLs nikaalta hai."""
     api_key = api_key or os.environ.get("PEXELS_API_KEY")
     if not api_key:
         return []
@@ -72,7 +72,7 @@ def search_pexels(keywords, api_key=None, per_query=2):
         try:
             r = requests.get(
                 PEXELS_SEARCH, headers=headers,
-                params={"query": kw, "orientation": "portrait", "per_page": per_query},
+                params={"query": kw, "orientation": orientation, "per_page": per_query},
                 timeout=30,
             )
             r.raise_for_status()
@@ -112,10 +112,10 @@ def search_pixabay(keywords, api_key=None, per_query=2):
     return urls
 
 
-def gather_clip_urls(keywords, pexels_key=None):
+def gather_clip_urls(keywords, pexels_key=None, orientation="portrait"):
     """Pexels + Pixabay dono se clips jama, dedup + shuffle (zyada variety)."""
     import random
-    urls = search_pexels(keywords, pexels_key) + search_pixabay(keywords)
+    urls = search_pexels(keywords, pexels_key, orientation=orientation) + search_pixabay(keywords)
     random.shuffle(urls)
     seen, out = set(), []
     for u in urls:
@@ -134,12 +134,12 @@ def _download(url, path):
     return path
 
 
-def _normalize_clip(src, dst, clip_seconds):
-    """Clip ko 1080x1920, exact clip_seconds (loop if short), 30fps, uniform format."""
+def _normalize_clip(src, dst, clip_seconds, w=1080, h=1920):
+    """Clip ko w x h, exact clip_seconds (loop if short), 30fps, uniform format."""
     _run([
         "ffmpeg", "-y", "-stream_loop", "-1", "-i", src,
         "-t", f"{clip_seconds:.2f}",
-        "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+        "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
                f"fps=30,format=yuv420p,setsar=1",
         "-an",
         "-c:v", "libx264", "-preset", PRESET, "-pix_fmt", "yuv420p", dst,
@@ -178,25 +178,30 @@ def render_faceless_segment(
     pexels_api_key=None,
     workdir="_work_faceless",
     add_captions=True,
+    vertical=True,
+    max_clip_seconds=None,
+    unique_clips=None,
 ):
     """
-    Ek faceless segment ki clip banata hai.
-    segment: {"keywords": [...], "text": "...", ...}
-    audio_path: is segment ka voiceover mp3
-    return: output_path
+    Ek faceless video banata hai.
+    vertical=True -> 1080x1920 (Shorts/TikTok); False -> 1920x1080 (YouTube long).
     """
     os.makedirs(workdir, exist_ok=True)
     audio_dur = _media_duration(audio_path)
 
+    w, h = (1080, 1920) if vertical else (1920, 1080)
+    orientation = "portrait" if vertical else "landscape"
+
     # 1) clips dono sources se (Pexels + Pixabay)
-    urls = gather_clip_urls(segment.get("keywords"), pexels_api_key)
+    urls = gather_clip_urls(segment.get("keywords"), pexels_api_key, orientation)
     if not urls:
-        urls = gather_clip_urls(["cinematic background"], pexels_api_key)
+        urls = gather_clip_urls(["cinematic background"], pexels_api_key, orientation)
     if not urls:
         raise RuntimeError("Pexels/Pixabay se koi clip nahi mili.")
 
-    # 2) per_clip <= 3 sec (fast pacing). Zyada clips -> hard cuts (memory-safe)
-    MAX_CLIP_SECONDS = float(os.environ.get("MAX_CLIP_SECONDS", "3"))
+    # 2) per_clip cap. Zyada clips -> hard cuts (memory-safe)
+    default_cap = float(os.environ.get("MAX_CLIP_SECONDS", "3"))
+    MAX_CLIP_SECONDS = float(max_clip_seconds) if max_clip_seconds else default_cap
     XFADE_MAX = int(os.environ.get("XFADE_MAX_CLIPS", "6"))
     HARD_CAP = int(os.environ.get("MAX_CLIPS", "40"))
 
@@ -211,7 +216,8 @@ def render_faceless_segment(
         use_xfade = False
 
     # 3) thodi UNIQUE clips download/normalize, phir cycle karke n slots
-    unique = max(1, min(n, len(urls), int(os.environ.get("UNIQUE_CLIPS", "6"))))
+    uniq_cap = unique_clips or int(os.environ.get("UNIQUE_CLIPS", "6"))
+    unique = max(1, min(n, len(urls), uniq_cap))
     norm_clips = []
     for i in range(unique):
         url = urls[i % len(urls)]
@@ -219,7 +225,7 @@ def render_faceless_segment(
         norm = os.path.join(workdir, f"norm_{i}.mp4")
         try:
             _download(url, raw)
-            _normalize_clip(raw, norm, per_clip)
+            _normalize_clip(raw, norm, per_clip, w, h)
             norm_clips.append(norm)
         except Exception as e:
             print(f"  clip {i} skip: {e}")
@@ -232,8 +238,9 @@ def render_faceless_segment(
     if add_captions:
         srt = os.path.join(workdir, "captions.srt")
         _make_captions_srt(audio_path, srt)
+    margin_v = 240 if vertical else 60
     style = ("FontName=Arial,FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,"
-             "OutlineColour=&H00000000,Outline=3,Alignment=2,MarginV=240")
+             f"OutlineColour=&H00000000,Outline=3,Alignment=2,MarginV={margin_v}")
     fade_out_st = max(0.0, audio_dur - 0.5)
 
     if use_xfade and len(seq) > 1:
@@ -302,3 +309,4 @@ if __name__ == "__main__":
     # make_voiceover(seg["text"], "seg_audio.mp3")
     render_faceless_segment(seg, "seg_audio.mp3", "faceless_segment.mp4")
     print("Done -> faceless_segment.mp4")
+  
