@@ -83,21 +83,34 @@ def send_audio(chat_id, path, caption=""):
 
 
 def send_video(chat_id, path, caption=""):
+    """Telegram pe video bhejta hai. Fail ho to crash nahi (non-fatal) + 1 retry."""
     if not chat_id:
-        return
-    with open(path, "rb") as f:
-        requests.post(f"{BASE}/sendVideo",
-                      data={"chat_id": chat_id, "caption": caption[:1000]},
-                      files={"video": f}, timeout=600)
+        return False
+    for attempt in range(2):
+        try:
+            with open(path, "rb") as f:
+                r = requests.post(f"{BASE}/sendVideo",
+                                  data={"chat_id": chat_id, "caption": caption[:1000]},
+                                  files={"video": f}, timeout=900)
+            if r.status_code < 400:
+                return True
+        except Exception as e:
+            print(f"[send_video] attempt {attempt+1} fail: {e}")
+            time.sleep(3)
+    print("[send_video] gave up (post will still continue)")
+    return False
 
 
 def send_photo(chat_id, path, caption=""):
     if not chat_id:
         return
-    with open(path, "rb") as f:
-        requests.post(f"{BASE}/sendPhoto",
-                      data={"chat_id": chat_id, "caption": caption[:1000]},
-                      files={"photo": f}, timeout=120)
+    try:
+        with open(path, "rb") as f:
+            requests.post(f"{BASE}/sendPhoto",
+                          data={"chat_id": chat_id, "caption": caption[:1000]},
+                          files={"photo": f}, timeout=180)
+    except Exception as e:
+        print(f"[send_photo] fail: {e}")
 
 
 def _keywords_from(data):
@@ -445,7 +458,10 @@ def handle(chat_id, text):
         send_message(chat_id, f"\u23F3 Bana raha hoon: \"{topic}\"...")
         try:
             out, caption, _ = build_video(topic, chat_id=chat_id, tag=f"{chat_id}_")
-            send_video(chat_id, out, caption)
+            ok = send_video(chat_id, out, caption)
+            if not ok:
+                send_message(chat_id, "\u2139\uFE0F Telegram pe video bhejne me dikkat (net), "
+                                      "par post jaari hai...")
             send_message(chat_id, "\U0001F4E4 YouTube/TikTok pe post kar raha hoon...")
             try:
                 publish_video(out, caption)
@@ -517,19 +533,4 @@ def main():
         try:
             r = requests.get(f"{BASE}/getUpdates",
                              params={"timeout": 30, "offset": offset}, timeout=40)
-            for update in r.json().get("result", []):
-                offset = update["update_id"] + 1
-                msg = update.get("message") or {}
-                chat_id = (msg.get("chat") or {}).get("id")
-                text = msg.get("text")
-                if chat_id and text:
-                    threading.Thread(target=handle, args=(chat_id, text), daemon=True).start()
-        except requests.exceptions.RequestException:
-            time.sleep(3)
-        except KeyboardInterrupt:
-            break
-
-
-if __name__ == "__main__":
-    main()
-        
+            for update in r.json().get("resu
