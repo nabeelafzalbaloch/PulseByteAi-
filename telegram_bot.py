@@ -1,4 +1,3 @@
-
 """
 telegram_bot.py  (PulseByteAi — full + AUTO-SCHEDULER + manual)
 --------------------------------------------------------------
@@ -155,8 +154,31 @@ def _keywords_from(data):
 
 
 def _caption_of(data):
-    return (data.get("description", "")[:800] + "\n\n" +
-            " ".join(data.get("hashtags", [])))
+    desc = (data.get("description") or "").strip()
+    # Agar description me galti se breakdown (TITLE/HOOK/SCRIPT) aa gaya ho to clean karo
+    markers = ("TITLE", "HOOK", "SCRIPT", "SCENES", "DESCRIPTION",
+               "KEYWORDS", "FLOW NOTES", "\U0001F4CC", "\U0001F3AF",
+               "\U0001F4DD", "\U0001F4C4")
+    looks_dirty = any(m in desc[:200] for m in markers)
+    if looks_dirty or not desc:
+        # Saaf fallback: hook + script ka pehla hissa
+        hook = (data.get("hook") or "").strip()
+        script = (data.get("script") or "").strip()
+        desc = (hook + "\n\n" + script).strip() if (hook or script) else desc
+    # Koi bhi marker line ho to hata do
+    lines = []
+    for ln in desc.splitlines():
+        s = ln.strip()
+        if any(s.upper().startswith(m) for m in
+               ("TITLE", "HOOK", "SCRIPT", "SCENES", "DESCRIPTION",
+                "KEYWORDS", "FLOW NOTES")):
+            continue
+        if s[:1] in ("\U0001F4CC", "\U0001F3AF", "\U0001F4DD", "\U0001F4C4"):
+            continue
+        lines.append(ln)
+    clean = "\n".join(lines).strip()[:800]
+    tags = " ".join(data.get("hashtags", []))
+    return (clean + ("\n\n" + tags if tags else "")).strip()
 
 
 def _send_breakdown(chat_id, d):
