@@ -1,3 +1,4 @@
+
 """
 telegram_bot.py  (PulseByteAi — full + AUTO-SCHEDULER + manual)
 --------------------------------------------------------------
@@ -529,3 +530,107 @@ def handle(chat_id, text):
         send_message(chat_id, f"\u23F3 Bana raha hoon: \"{topic}\"...")
         try:
             out, caption, _ = build_video(topic, chat_id=chat_id, tag=f"{chat_id}_")
+            ok = send_video(chat_id, out, caption)
+            if not ok:
+                send_message(chat_id, "\u2139\uFE0F Telegram pe video bhejne me dikkat (net), "
+                                      "par post jaari hai...")
+            send_message(chat_id, "\U0001F4E4 YouTube/TikTok pe post kar raha hoon...")
+            try:
+                publish_video(out, caption)
+                _mark_posted(topic)
+                _post_facebook(out, caption, chat_id)
+                send_message(chat_id,
+                    "\u2705 Post ho gaya!\n"
+                    "\U0001F4E5 Facebook ke liye upar wali video download karke daal dein.")
+            except Exception as e:
+                send_message(chat_id,
+                    f"\u26A0\uFE0F Video ban gayi (upar) par auto-post fail: {e}")
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+        except Exception as e:
+            send_message(chat_id, f"\u274C Error: {e}")
+        return
+
+    cmd = None
+    for c in ("video:", "voice:", "script:"):
+        if low.startswith(c):
+            cmd = c[:-1]
+            break
+    if not cmd:
+        send_message(chat_id, "\u2705 PulseByteAi alive! 'post: <topic>' try karein.")
+        return
+
+    topic = text.split(":", 1)[1].strip()
+    if not topic:
+        send_message(chat_id, "Topic khaali hai.")
+        return
+    send_message(chat_id, f"\u23F3 Bana raha hoon: \"{topic}\"...")
+    try:
+        if cmd == "script":
+            with render_lock:
+                data = generate_script(topic, duration=30)
+            _send_breakdown(chat_id, data)
+            return
+        if cmd == "voice":
+            with render_lock:
+                data = generate_script(topic, duration=30)
+                _send_breakdown(chat_id, data)
+                audio = f"audio_{chat_id}_{int(time.time())}.mp3"
+                make_voiceover(data["script"], audio)
+            send_audio(chat_id, audio)
+            os.remove(audio)
+            return
+        out, caption, _ = build_video(topic, chat_id=chat_id, tag=f"{chat_id}_")
+        send_video(chat_id, out, caption)
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+    except Exception as e:
+        send_message(chat_id, f"\u274C Error: {e}")
+
+
+def _drain_old_updates():
+    """Startup pe purane (bot down ke dauraan aaye) messages skip kar do."""
+    try:
+        r = requests.get(f"{BASE}/getUpdates", params={"timeout": 0, "offset": -1}, timeout=20)
+        results = r.json().get("result", [])
+        if results:
+            return results[-1]["update_id"] + 1
+    except Exception as e:
+        print(f"[startup] drain skip: {e}")
+    return None
+
+
+def main():
+    if not TOKEN:
+        raise SystemExit("TELEGRAM_TOKEN set nahi hai.")
+    print("PulseByteAi bot chal raha hai...")
+    if AUTO_POST or AUTO_LONG:
+        threading.Thread(target=run_scheduler, daemon=True).start()
+    else:
+        print("[scheduler] OFF (AUTO_POST / AUTO_LONG = on karne par chalega)")
+
+    offset = _drain_old_updates()   # purane backlog ignore
+    print(f"[startup] offset set to {offset} (purane messages skip)")
+    while True:
+        try:
+            r = requests.get(f"{BASE}/getUpdates",
+                             params={"timeout": 30, "offset": offset}, timeout=40)
+            for update in r.json().get("result", []):
+                offset = update["update_id"] + 1
+                msg = update.get("message") or {}
+                chat_id = (msg.get("chat") or {}).get("id")
+                text = msg.get("text")
+                if chat_id and text:
+                    threading.Thread(target=handle, args=(chat_id, text), daemon=True).start()
+        except requests.exceptions.RequestException:
+            time.sleep(3)
+        except KeyboardInterrupt:
+            break
+
+
+if __name__ == "__main__":
+    main()
