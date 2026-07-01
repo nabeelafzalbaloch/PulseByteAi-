@@ -1,4 +1,3 @@
-
 """
 generate_script.py  (PulseByteAi — web-researched + AI Uncovered style)
 ----------------------------------------------------------------------
@@ -19,10 +18,30 @@ Env: ANTHROPIC_API_KEY  (zaroori) ; TAVILY_API_KEY (optional, web facts ke liye)
 import os
 import json
 import time
-import anthropic
+import requests
+try:
+    import anthropic
+    _HAS_ANTHROPIC = True
+except ImportError:
+    _HAS_ANTHROPIC = False
 from web_research import research_topic
 
 MODEL = "claude-sonnet-4-6"
+GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_MODEL + ":generateContent"
+
+
+def _call_gemini(system, prompt, api_key, max_tokens=2500):
+    url = GEMINI_URL + "?key=" + api_key
+    body = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.9}
+    }
+    r = requests.post(url, json=body, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 HOOK_FRAMEWORKS = """HOOK FRAMEWORKS: 1.Curiosity gap 2.Contrarian("Stop...") 3.Bold promise
 4.Pointed question 5.Mistake/warning 6.Specific number 7.Relatable callout 8.Surprising fact.
@@ -122,8 +141,6 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
                     brand_voice=None, api_key=None, max_retries=3, use_research=True,
                     long_form=False, feedback="", lessons=""):
     brand_voice = brand_voice if brand_voice is not None else os.environ.get("BRAND_VOICE", "")
-    client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
-
     facts = research_topic(topic) if use_research else ""
     system = LONG_SYSTEM_PROMPT if long_form else SYSTEM_PROMPT
     max_tokens = 4000 if long_form else 2500
@@ -146,14 +163,36 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
     user.append("\nGenerate the full PulseByteAi JSON now.")
     prompt = "\n".join(user)
 
+    # Gemini key check
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    anthropic_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+
     last_error = None
     for attempt in range(1, max_retries + 1):
         try:
-            resp = client.messages.create(
-                model=MODEL, max_tokens=max_tokens, system=system,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            data = _extract_json(resp.content[0].text)
+            # Gemini pehle try karo agar key hai (free!)
+            if gemini_key:
+                try:
+                    raw = _call_gemini(system, prompt, gemini_key, max_tokens)
+                    data = _extract_json(raw)
+                except Exception as ge:
+                    if not anthropic_key:
+                        raise RuntimeError(f"Gemini fail: {ge}")
+                    # Gemini fail → Anthropic try
+                    client = anthropic.Anthropic(api_key=anthropic_key)
+                    resp = client.messages.create(
+                        model=MODEL, max_tokens=max_tokens, system=system,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    data = _extract_json(resp.content[0].text)
+            else:
+                # Sirf Anthropic
+                client = anthropic.Anthropic(api_key=anthropic_key)
+                resp = client.messages.create(
+                    model=MODEL, max_tokens=max_tokens, system=system,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                data = _extract_json(resp.content[0].text)
 
             best = max(data["hook_options"], key=lambda h: h.get("score", 0)) \
                 if data.get("hook_options") else None
@@ -202,19 +241,36 @@ Return ONLY JSON, no markdown:
 
 def evaluate_content(data, api_key=None):
     """Script plan ko rate karta hai. Return {score, strengths, weaknesses, fixes}."""
-    client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    anthropic_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     plan = (f"TITLE: {data.get('title','')}\n"
             f"HOOK: {data.get('hook','')}\n"
             f"SCRIPT: {data.get('script','')}\n"
             f"DESCRIPTION: {data.get('description','')}\n"
             f"KEYWORDS: {', '.join(data.get('keywords', []))}\n"
             f"HASHTAGS: {' '.join(data.get('hashtags', []))}")
+    prompt = plan + "\n\nRate it now (JSON only)."
     try:
-        resp = client.messages.create(
-            model=MODEL, max_tokens=600, system=EVAL_SYSTEM,
-            messages=[{"role": "user", "content": plan + "\n\nRate it now (JSON only)."}],
-        )
-        ev = _extract_json(resp.content[0].text)
+        if gemini_key:
+            try:
+                raw = _call_gemini(EVAL_SYSTEM, prompt, gemini_key, 600)
+                ev = _extract_json(raw)
+            except Exception:
+                if not anthropic_key:
+                    return {"score": 7.0, "strengths": "", "weaknesses": "", "fixes": ""}
+                client = anthropic.Anthropic(api_key=anthropic_key)
+                resp = client.messages.create(
+                    model=MODEL, max_tokens=600, system=EVAL_SYSTEM,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                ev = _extract_json(resp.content[0].text)
+        else:
+            client = anthropic.Anthropic(api_key=anthropic_key)
+            resp = client.messages.create(
+                model=MODEL, max_tokens=600, system=EVAL_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            ev = _extract_json(resp.content[0].text)
         ev["score"] = float(ev.get("score", 0))
         return ev
     except Exception as e:
@@ -248,3 +304,4 @@ if __name__ == "__main__":
     print("SCORE:", score)
     print("TITLE:", data["title"])
     print("HOOK:", data["hook"])
+  
