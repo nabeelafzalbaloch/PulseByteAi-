@@ -12,7 +12,7 @@ Output (pipeline-compatible):
   title(<=60), hook, hook_type, hook_options, script, scenes, description,
   keywords(5), hashtags(3), video_flow_notes
 
-Env: ANTHROPIC_API_KEY  (zaroori) ; TAVILY_API_KEY (optional, web facts ke liye)
+Env: ANTHROPIC_API_KEY (primary) ; GEMINI_API_KEY (fallback, free) ; TAVILY_API_KEY (optional)
 """
 
 import os
@@ -27,28 +27,31 @@ except ImportError:
 from web_research import research_topic
 
 MODEL = "claude-sonnet-4-6"
-
-
-GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_MODEL + ":generateContent"
+GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
+              + GEMINI_MODEL + ":generateContent")
 
 
 def _call_gemini(system, prompt, api_key, max_tokens=2500):
     url = GEMINI_URL + "?key=" + api_key
     full_prompt = system + "\n\n" + prompt
     body = {
-        "contents": [
-            {"role": "user", "parts": [{"text": full_prompt}]}
-        ],
+        "contents": [{"role": "user", "parts": [{"text": full_prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.9}
     }
-    r = requests.post(url, json=body, timeout=90)
-    r.raise_for_status()
-    data = r.json()
-    candidates = data.get("candidates", [])
-    if not candidates:
-        raise RuntimeError(f"Gemini empty response: {data}")
-    return candidates[0]["content"]["parts"][0]["text"]
+    for attempt in range(3):
+        r = requests.post(url, json=body, timeout=90)
+        if r.status_code == 429:
+            time.sleep(10 * (attempt + 1))
+            continue
+        r.raise_for_status()
+        data = r.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            raise RuntimeError(f"Gemini empty response: {data}")
+        return candidates[0]["content"]["parts"][0]["text"]
+    raise RuntimeError("Gemini rate limit - 3 attempts failed")
+
 
 HOOK_FRAMEWORKS = """HOOK FRAMEWORKS: 1.Curiosity gap 2.Contrarian("Stop...") 3.Bold promise
 4.Pointed question 5.Mistake/warning 6.Specific number 7.Relatable callout 8.Surprising fact.
@@ -170,25 +173,25 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
     user.append("\nGenerate the full PulseByteAi JSON now.")
     prompt = "\n".join(user)
 
-    # Gemini key check
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    # Claude pehle (best quality), Gemini fallback (free)
     anthropic_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
     last_error = None
     for attempt in range(1, max_retries + 1):
         try:
-            if gemini_key:
-                raw = _call_gemini(system, prompt, gemini_key, max_tokens)
-                data = _extract_json(raw)
-            elif anthropic_key:
+            if anthropic_key and _HAS_ANTHROPIC:
                 client = anthropic.Anthropic(api_key=anthropic_key)
                 resp = client.messages.create(
                     model=MODEL, max_tokens=max_tokens, system=system,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 data = _extract_json(resp.content[0].text)
+            elif gemini_key:
+                raw = _call_gemini(system, prompt, gemini_key, max_tokens)
+                data = _extract_json(raw)
             else:
-                raise RuntimeError("Koi API key nahi mili (GEMINI_API_KEY ya ANTHROPIC_API_KEY)")
+                raise RuntimeError("Koi API key nahi (ANTHROPIC_API_KEY ya GEMINI_API_KEY)")
 
             best = max(data["hook_options"], key=lambda h: h.get("score", 0)) \
                 if data.get("hook_options") else None
@@ -217,7 +220,7 @@ def generate_script(topic, video_type="faceless", duration=30, language="English
         except (json.JSONDecodeError, ValueError) as e:
             last_error = e
             time.sleep(1.5 * attempt)
-        except anthropic.APIError as e:
+        except Exception as e:
             last_error = e
             time.sleep(2 * attempt)
 
@@ -237,8 +240,8 @@ Return ONLY JSON, no markdown:
 
 def evaluate_content(data, api_key=None):
     """Script plan ko rate karta hai. Return {score, strengths, weaknesses, fixes}."""
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
     anthropic_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
     plan = (f"TITLE: {data.get('title','')}\n"
             f"HOOK: {data.get('hook','')}\n"
             f"SCRIPT: {data.get('script','')}\n"
@@ -247,29 +250,27 @@ def evaluate_content(data, api_key=None):
             f"HASHTAGS: {' '.join(data.get('hashtags', []))}")
     prompt = plan + "\n\nRate it now (JSON only)."
     try:
-        if gemini_key:
-            raw = _call_gemini(EVAL_SYSTEM, prompt, gemini_key, 600)
-            ev = _extract_json(raw)
-        elif anthropic_key:
+        if anthropic_key and _HAS_ANTHROPIC:
             client = anthropic.Anthropic(api_key=anthropic_key)
             resp = client.messages.create(
                 model=MODEL, max_tokens=600, system=EVAL_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
             )
             ev = _extract_json(resp.content[0].text)
+        elif gemini_key:
+            raw = _call_gemini(EVAL_SYSTEM, prompt, gemini_key, 600)
+            ev = _extract_json(raw)
         else:
             return {"score": 7.0, "strengths": "", "weaknesses": "", "fixes": ""}
         ev["score"] = float(ev.get("score", 0))
         return ev
     except Exception as e:
-        # eval fail -> neutral pass (taake pipeline na ruke)
         return {"score": 7.0, "strengths": "", "weaknesses": "",
                 "fixes": "", "_eval_error": str(e)}
 
 
 def generate_rated_script(topic, threshold=7.0, attempts=3, **kwargs):
-    """generate -> self-rate -> agar score < threshold to feedback ke saath dobara.
-    Return (best_data, best_score). best_data me '_score' aur '_eval' bhi hote hain."""
+    """generate -> self-rate -> agar score < threshold to feedback ke saath dobara."""
     api_key = kwargs.get("api_key")
     best, best_score, feedback = None, -1.0, ""
     for _ in range(max(1, attempts)):
@@ -292,4 +293,4 @@ if __name__ == "__main__":
     print("SCORE:", score)
     print("TITLE:", data["title"])
     print("HOOK:", data["hook"])
-      
+                      
